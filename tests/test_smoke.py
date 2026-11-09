@@ -156,6 +156,24 @@ class OfflineGuardTests(unittest.TestCase):
         finally:
             urllib.request.urlopen = original  # type: ignore[assignment]
 
+    def test_tesseract_pins_are_github_official(self) -> None:
+        from tesseract_pins import (
+            TESSDATA_ENG_URL,
+            TESSDATA_RUS_URL,
+            TESSERACT_RELEASE_PAGE,
+            TESSERACT_SETUP_SHA256,
+            TESSERACT_SETUP_URL,
+        )
+
+        for url in (
+            TESSERACT_SETUP_URL,
+            TESSERACT_RELEASE_PAGE,
+            TESSDATA_ENG_URL,
+            TESSDATA_RUS_URL,
+        ):
+            self.assertTrue(url.startswith("https://github.com/tesseract-ocr/"))
+        self.assertEqual(len(TESSERACT_SETUP_SHA256), 64)
+
     def test_tesseract_checksum_rejects_mismatch(self) -> None:
         import tempfile
         from pathlib import Path

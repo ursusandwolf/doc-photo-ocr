@@ -26,7 +26,7 @@ UI language defaults to **Russian**. Switch to English in the GUI combo box, or 
 2. Run `start.bat` (or `DocOCR.vbs` / `DocOCR.bat`).
 3. If libraries are missing — **Install libraries** (internet once).
 4. If models are missing — **Download models** (internet once).
-5. Optional: **Install Tesseract** for the alternate engine (internet once + one UAC prompt; installs under `%LOCALAPPDATA%\DocOCR\tesseract`).
+5. Optional: **Install Tesseract** (internet + UAC). The app shows the official GitHub URL and pinned SHA-256 first — Windows may still say “Unknown publisher” because the UB-Mannheim NSIS build is often unsigned.
 6. Drop a photo or folder (or use the buttons) — get `result.txt`.
 
 If the machine already has Python 3.9+ with tkinter, the app uses it and does **not** reinstall Python.  
@@ -129,6 +129,7 @@ Possible later: score both engines and keep the better pass (not implemented).
 | [`engines.py`](engines.py) | Strategy: EasyOCR / Tesseract → `TextLine` |
 | [`preprocess.py`](preprocess.py) | Geometry / contrast / invert |
 | [`spellcheck.py`](spellcheck.py) | Offline polish |
+| [`tesseract_pins.py`](tesseract_pins.py) | Pinned installer/tessdata URLs + SHA-256 |
 | [`tesseract_setup.py`](tesseract_setup.py) | Detect + local Tesseract install |
 | [`offline_guard.py`](offline_guard.py) | Block `urlopen` during OCR |
 | [`i18n.py`](i18n.py) | RU/EN strings |
@@ -225,7 +226,26 @@ Modern office samples with fictional data live in [`resources/`](resources/): ap
 | Spellcheck / preprocess | No | Local only |
 | **Install libraries** | Yes (user click) | `pip` + `download.pytorch.org` (subprocess; not via OCR guard) |
 | **Download models** / `--download-models` | Yes (user click) | EasyOCR CDN (GitHub JaidedAI releases) |
-| **Install Tesseract** | Yes (user click + UAC) | Official GitHub asset + pinned SHA-256; silent NSIS into LocalAppData + eng/rus tessdata |
+| **Install Tesseract** | Yes (user click + UAC) | Official GitHub asset + pinned SHA-256; silent NSIS into LocalAppData + eng/rus tessdata (URLs below) |
+
+### Tesseract download sources (pinned constants)
+
+**Policy:** DocOCR never downloads “latest” Tesseract at runtime. URLs and SHA-256 digests are **frozen constants** in [`tesseract_pins.py`](tesseract_pins.py). Upstream can release newer builds; this app keeps using the pinned files until a maintainer updates that module (and this table) together.
+
+| Constant | Current value |
+|---|---|
+| `TESSERACT_RELEASE_PAGE` | https://github.com/tesseract-ocr/tesseract/releases/tag/5.5.3 |
+| `TESSERACT_SETUP_URL` | https://github.com/tesseract-ocr/tesseract/releases/download/5.5.3/tesseract-ocr-w64-setup-5.5.3.20260724.exe |
+| `TESSERACT_SETUP_SHA256` | `bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4` |
+| `TESSDATA_ENG_URL` | https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata |
+| `TESSDATA_ENG_SHA256` | `daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047` |
+| `TESSDATA_RUS_URL` | https://github.com/tesseract-ocr/tessdata/raw/main/rus.traineddata |
+| `TESSDATA_RUS_SHA256` | `681be2c2bead1bc7bd235df88c44e8e60ae73ae866840c0ad4e3b4c247bd37c2` |
+
+Hosts allowed: `github.com/tesseract-ocr` only. After download, SHA-256 must match or install aborts.  
+GUI trust dialog: clickable release/file links, **Copy hash**, VirusTotal for the digest, then UAC.
+
+**Bump procedure:** edit [`tesseract_pins.py`](tesseract_pins.py) → recompute hashes → update this README table → commit.
 
 How the OCR guard works:
 
@@ -255,6 +275,7 @@ DocOCR.bat          Windows GUI launcher
 gui.py              setup + drag-and-drop UI
 ocr.py              CLI + worker + EasyOCR helpers
 engines.py          EasyOCR / Tesseract Strategy
+tesseract_pins.py   pinned Tesseract URLs + SHA-256
 tesseract_setup.py  detect + local Tesseract install
 offline_guard.py    block urlopen during OCR
 preprocess.py       image prep

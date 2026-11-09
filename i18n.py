@@ -141,6 +141,27 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "Нужен интернет и подтверждение UAC; каталог:\n"
             "%LOCALAPPDATA%\\DocOCR\\tesseract."
         ),
+        "gui.tesseract_trust_title": "Установка Tesseract — проверка источника",
+        "gui.tesseract_trust_intro": (
+            "Будет скачан официальный установщик OCR Tesseract с GitHub "
+            "организации tesseract-ocr (сборка UB-Mannheim)."
+        ),
+        "gui.tesseract_trust_publisher": "Издатель сборки: {publisher}",
+        "gui.tesseract_trust_version": "Версия: {version}",
+        "gui.tesseract_trust_release_label": "Страница релиза (откроется в браузере):",
+        "gui.tesseract_trust_url_label": "Прямая ссылка на файл:",
+        "gui.tesseract_trust_hash_label": "Ожидаемый SHA-256 (сверим после загрузки):",
+        "gui.tesseract_trust_hash_hint": "Клик по хешу открывает VirusTotal для этой суммы.",
+        "gui.tesseract_trust_copy": "Копировать хеш",
+        "gui.tesseract_trust_copied": "Скопировано",
+        "gui.tesseract_trust_open_vt": "Открыть в VirusTotal",
+        "gui.tesseract_trust_warning": (
+            "Windows может показать «Неизвестный издатель» — у этой сборки часто нет "
+            "подписи Authenticode. Это ожидаемо. Доверие даёт официальный URL + хеш, "
+            "не сертификат Store. Дальше появится UAC."
+        ),
+        "gui.tesseract_trust_continue": "Продолжить",
+        "gui.tesseract_trust_cancel": "Отмена",
         "gui.tesseract_already": "Tesseract уже доступен: {path}",
         "gui.tesseract_download_setup": "Скачиваю установщик Tesseract…",
         "gui.tesseract_download_7zip": "Скачиваю 7zr для распаковки…",
@@ -359,6 +380,27 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "Internet and a UAC approval are required; folder:\n"
             "%LOCALAPPDATA%\\DocOCR\\tesseract."
         ),
+        "gui.tesseract_trust_title": "Install Tesseract — verify the source",
+        "gui.tesseract_trust_intro": (
+            "DocOCR will download the official Tesseract OCR installer from the "
+            "GitHub tesseract-ocr organization (UB-Mannheim build)."
+        ),
+        "gui.tesseract_trust_publisher": "Build publisher: {publisher}",
+        "gui.tesseract_trust_version": "Version: {version}",
+        "gui.tesseract_trust_release_label": "Release page (opens in browser):",
+        "gui.tesseract_trust_url_label": "Direct file URL:",
+        "gui.tesseract_trust_hash_label": "Expected SHA-256 (verified after download):",
+        "gui.tesseract_trust_hash_hint": "Click the hash to open VirusTotal for this digest.",
+        "gui.tesseract_trust_copy": "Copy hash",
+        "gui.tesseract_trust_copied": "Copied",
+        "gui.tesseract_trust_open_vt": "Open in VirusTotal",
+        "gui.tesseract_trust_warning": (
+            "Windows may say «Unknown publisher» — this build often has no Authenticode "
+            "signature. That is expected. Trust comes from the official URL + hash, "
+            "not a Store certificate. A UAC prompt will follow."
+        ),
+        "gui.tesseract_trust_continue": "Continue",
+        "gui.tesseract_trust_cancel": "Cancel",
         "gui.tesseract_already": "Tesseract already available: {path}",
         "gui.tesseract_download_setup": "Downloading Tesseract installer…",
         "gui.tesseract_download_7zip": "Downloading 7zr for extraction…",

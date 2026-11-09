@@ -26,33 +26,34 @@ from typing import Callable, Optional, Sequence
 from engines import TESSERACT_CMD_FILE, resolve_tesseract_cmd
 from errors import OcrError
 from i18n import t
+from tesseract_pins import (
+    REQUIRED_TESSERACT_LANGS,
+    TESSDATA_FILES,
+    TESSERACT_PUBLISHER,
+    TESSERACT_RELEASE_PAGE,
+    TESSERACT_SETUP_NAME,
+    TESSERACT_SETUP_SHA256,
+    TESSERACT_SETUP_URL,
+    TESSERACT_SETUP_URLS,
+    TESSERACT_VERSION,
+)
 
 LogFn = Callable[[str], None]
 
-# Pinned UB-Mannheim Windows x64 NSIS installer (official GitHub release asset).
-_TESSERACT_VERSION = "5.5.3.20260724"
-_TESSERACT_TAG = "5.5.3"
-_TESSERACT_SETUP_NAME = f"tesseract-ocr-w64-setup-{_TESSERACT_VERSION}.exe"
-_TESSERACT_SETUP_URLS = (
-    f"https://github.com/tesseract-ocr/tesseract/releases/download/"
-    f"{_TESSERACT_TAG}/{_TESSERACT_SETUP_NAME}",
-)
-# SHA-256 of the exact pinned bytes (recompute when bumping the version).
-_TESSERACT_SETUP_SHA256 = (
-    "bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4"
-)
-_TESSDATA_FILES = {
-    "eng.traineddata": (
-        "https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata",
-        "daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047",
-    ),
-    "rus.traineddata": (
-        "https://github.com/tesseract-ocr/tessdata/raw/main/rus.traineddata",
-        "681be2c2bead1bc7bd235df88c44e8e60ae73ae866840c0ad4e3b4c247bd37c2",
-    ),
-}
-_REQUIRED_LANGS = ("eng", "rus")
 _INSTALL_WAIT_SECONDS = 600
+
+
+def tesseract_trust_info() -> dict[str, str]:
+    """Facts shown before UAC so users can verify the official download."""
+    return {
+        "version": TESSERACT_VERSION,
+        "url": TESSERACT_SETUP_URL,
+        "release_page": TESSERACT_RELEASE_PAGE,
+        "sha256": TESSERACT_SETUP_SHA256,
+        "sha_short": TESSERACT_SETUP_SHA256[:16],
+        "publisher": TESSERACT_PUBLISHER,
+        "setup_name": TESSERACT_SETUP_NAME,
+    }
 
 
 def install_dir() -> Path:
@@ -66,7 +67,9 @@ def tessdata_dir_for(exe: Path) -> Path:
 
 def has_required_langs(exe: Path) -> bool:
     tessdata = tessdata_dir_for(exe)
-    return all((tessdata / f"{code}.traineddata").is_file() for code in _REQUIRED_LANGS)
+    return all(
+        (tessdata / f"{code}.traineddata").is_file() for code in REQUIRED_TESSERACT_LANGS
+    )
 
 
 def is_tesseract_ready() -> bool:
@@ -102,9 +105,9 @@ def install_tesseract_local(log: Optional[LogFn] = None) -> Path:
     target = install_dir()
     with tempfile.TemporaryDirectory(prefix="dococr-tess-") as tmp:
         tmp_dir = Path(tmp)
-        setup_path = tmp_dir / _TESSERACT_SETUP_NAME
+        setup_path = tmp_dir / TESSERACT_SETUP_NAME
         emit(t("gui.tesseract_download_setup"))
-        _download_first_ok(_TESSERACT_SETUP_URLS, setup_path, emit)
+        _download_first_ok(TESSERACT_SETUP_URLS, setup_path, emit)
 
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
@@ -134,7 +137,7 @@ def _ensure_langs(exe: Path, emit: LogFn) -> None:
     tessdata = tessdata_dir_for(exe)
     tessdata.mkdir(parents=True, exist_ok=True)
     emit(t("gui.tesseract_download_langs"))
-    for name, (url, digest) in _TESSDATA_FILES.items():
+    for name, (url, digest) in TESSDATA_FILES.items():
         dest = tessdata / name
         if dest.is_file() and _file_sha256(dest) == digest:
             continue
@@ -145,7 +148,7 @@ def _download_first_ok(urls: Sequence[str], dest: Path, emit: LogFn) -> None:
     errors: list[str] = []
     for url in urls:
         try:
-            _download(url, dest, emit, expected_sha256=_TESSERACT_SETUP_SHA256)
+            _download(url, dest, emit, expected_sha256=TESSERACT_SETUP_SHA256)
             return
         except OcrError as error:
             errors.append(str(error))

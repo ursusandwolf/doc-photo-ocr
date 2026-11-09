@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable, Optional, Sequence, Union
@@ -35,7 +36,11 @@ from engines import (
 from i18n import get_ui_lang, set_ui_lang, t
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images
-from tesseract_setup import install_tesseract_local, is_tesseract_ready
+from tesseract_setup import (
+    install_tesseract_local,
+    is_tesseract_ready,
+    tesseract_trust_info,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -590,11 +595,8 @@ class App(tk.Tk):
         if self._busy:
             return
         if engine == ENGINE_TESSERACT and not is_tesseract_ready():
-            if messagebox.askyesno(
-                t("gui.tesseract_prompt_title"),
-                t("gui.tesseract_prompt_body"),
-            ):
-                self.on_install_tesseract()
+            if self._confirm_tesseract_install():
+                self._start_tesseract_install()
                 return
             fallback = self._last_good_engine or ENGINE_EASY
             self.ui_engine.set(fallback)
@@ -810,6 +812,15 @@ class App(tk.Tk):
         self._run_background("gui.task_models", self._download_models)
 
     def on_install_tesseract(self) -> None:
+        if not self._confirm_tesseract_install():
+            return
+        self._start_tesseract_install()
+
+    def _confirm_tesseract_install(self) -> bool:
+        """Modal trust dialog: clickable release link + copy SHA-256 before UAC."""
+        return ask_tesseract_trust(self)
+
+    def _start_tesseract_install(self) -> None:
         self._run_background("gui.task_tesseract", self._install_tesseract)
 
     def _install_tesseract(self) -> None:
@@ -1142,6 +1153,121 @@ def decode_drop_path(item: object) -> Path:
                 continue
         return Path(item.decode("utf-8", errors="replace"))
     return Path(str(item))
+
+
+def ask_tesseract_trust(parent: tk.Tk) -> bool:
+    """Show official source, clickable release link, and copyable SHA-256 before UAC."""
+    info = tesseract_trust_info()
+    result = {"ok": False}
+
+    dialog = tk.Toplevel(parent)
+    dialog.title(t("gui.tesseract_trust_title"))
+    dialog.transient(parent)
+    dialog.resizable(False, False)
+    dialog.grab_set()
+
+    frame = ttk.Frame(dialog, padding=14)
+    frame.pack(fill=tk.BOTH, expand=True)
+
+    ttk.Label(frame, text=t("gui.tesseract_trust_intro"), wraplength=480, justify=tk.LEFT).pack(
+        anchor=tk.W
+    )
+    ttk.Label(frame, text=t("gui.tesseract_trust_publisher", publisher=info["publisher"])).pack(
+        anchor=tk.W, pady=(10, 0)
+    )
+    ttk.Label(frame, text=t("gui.tesseract_trust_version", version=info["version"])).pack(
+        anchor=tk.W
+    )
+
+    ttk.Label(frame, text=t("gui.tesseract_trust_release_label")).pack(anchor=tk.W, pady=(10, 0))
+    release_link = ttk.Label(
+        frame,
+        text=info["release_page"],
+        foreground="#0b57d0",
+        cursor="hand2",
+        wraplength=480,
+    )
+    release_link.pack(anchor=tk.W)
+    release_link.bind(
+        "<Button-1>",
+        lambda _event: webbrowser.open(info["release_page"]),
+    )
+
+    ttk.Label(frame, text=t("gui.tesseract_trust_url_label")).pack(anchor=tk.W, pady=(10, 0))
+    url_link = ttk.Label(
+        frame,
+        text=info["url"],
+        foreground="#0b57d0",
+        cursor="hand2",
+        wraplength=480,
+    )
+    url_link.pack(anchor=tk.W)
+    url_link.bind("<Button-1>", lambda _event: webbrowser.open(info["url"]))
+
+    ttk.Label(frame, text=t("gui.tesseract_trust_hash_label")).pack(anchor=tk.W, pady=(10, 0))
+    hash_url = f"https://www.virustotal.com/gui/file/{info['sha256']}"
+    hash_link = ttk.Label(
+        frame,
+        text=info["sha256"],
+        foreground="#0b57d0",
+        cursor="hand2",
+        wraplength=480,
+    )
+    hash_link.pack(anchor=tk.W)
+    hash_link.bind("<Button-1>", lambda _event: webbrowser.open(hash_url))
+    ttk.Label(
+        frame,
+        text=t("gui.tesseract_trust_hash_hint"),
+        wraplength=480,
+    ).pack(anchor=tk.W, pady=(2, 0))
+
+    hash_row = ttk.Frame(frame)
+    hash_row.pack(fill=tk.X, pady=(6, 0))
+
+    def copy_hash() -> None:
+        dialog.clipboard_clear()
+        dialog.clipboard_append(info["sha256"])
+        dialog.update()
+        copy_btn.configure(text=t("gui.tesseract_trust_copied"))
+
+    copy_btn = ttk.Button(hash_row, text=t("gui.tesseract_trust_copy"), command=copy_hash)
+    copy_btn.pack(side=tk.LEFT)
+    ttk.Button(
+        hash_row,
+        text=t("gui.tesseract_trust_open_vt"),
+        command=lambda: webbrowser.open(hash_url),
+    ).pack(side=tk.LEFT, padx=(8, 0))
+
+    ttk.Label(
+        frame,
+        text=t("gui.tesseract_trust_warning"),
+        wraplength=480,
+        justify=tk.LEFT,
+    ).pack(anchor=tk.W, pady=(12, 0))
+
+    buttons = ttk.Frame(frame)
+    buttons.pack(fill=tk.X, pady=(14, 0))
+
+    def cancel() -> None:
+        result["ok"] = False
+        dialog.destroy()
+
+    def accept() -> None:
+        result["ok"] = True
+        dialog.destroy()
+
+    ttk.Button(buttons, text=t("gui.tesseract_trust_cancel"), command=cancel).pack(side=tk.RIGHT)
+    ttk.Button(buttons, text=t("gui.tesseract_trust_continue"), command=accept).pack(
+        side=tk.RIGHT, padx=(0, 8)
+    )
+
+    dialog.protocol("WM_DELETE_WINDOW", cancel)
+    dialog.update_idletasks()
+    dialog.geometry(
+        f"+{parent.winfo_rootx() + 40}+{parent.winfo_rooty() + 40}"
+    )
+    parent.wait_window(dialog)
+    return bool(result["ok"])
 
 
 def save_clipboard_image(dest: Path) -> Optional[Path]:
