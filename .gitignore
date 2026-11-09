@@ -1,0 +1,7 @@
+models/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+result.txt
+*.debug.txt
