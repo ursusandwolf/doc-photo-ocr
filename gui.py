@@ -24,10 +24,19 @@ from typing import Callable, Optional, Sequence, Union
 
 from PIL import Image, ImageGrab
 
-from engines import DEFAULT_ENGINE, ENGINE_EASY, ENGINE_NAMES, normalize_engine
+from engines import (
+    DEFAULT_ENGINE,
+    ENGINE_EASY,
+    ENGINE_NAMES,
+    ENGINE_TESSERACT,
+    normalize_engine,
+    resolve_tesseract_cmd,
+)
 from i18n import get_ui_lang, set_ui_lang, t
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images
+from tesseract_setup import install_tesseract_local, is_tesseract_ready
+
 
 APP_DIR = Path(__file__).resolve().parent
 VENV_DIR = APP_DIR / ".venv"
@@ -125,12 +134,22 @@ class OcrEngine:
             bufsize=1,
             **hidden_subprocess_kwargs(),
         )
-        assert self._process.stdout is not None
+        process = self._process
+        assert process is not None and process.stdout is not None
 
+        stray_lines: list[str] = []
         while True:
-            line = self._process.stdout.readline()
+            if self._process is not process:
+                raise RuntimeError("OCR worker was stopped")
+            try:
+                line = process.stdout.readline()
+            except (OSError, ValueError) as error:
+                raise RuntimeError("OCR worker was stopped") from error
             if not line:
-                code = self._process.poll()
+                code = process.poll()
+                detail = "\n".join(stray_lines).strip()
+                if detail:
+                    raise RuntimeError(detail)
                 raise RuntimeError(f"OCR worker exited early (code {code})")
             line = line.rstrip("\n")
             if line.startswith("##PROGRESS "):
@@ -143,6 +162,8 @@ class OcrEngine:
                 return
             elif line.startswith("##ERROR "):
                 raise RuntimeError(line[len("##ERROR ") :].strip())
+            elif line.strip():
+                stray_lines.append(line.strip())
 
     def recognize(
         self,
@@ -261,6 +282,7 @@ class App(tk.Tk):
         self.status_python = tk.StringVar()
         self.status_libs = tk.StringVar()
         self.status_models = tk.StringVar()
+        self.status_tesseract = tk.StringVar()
         self.progress_value = tk.DoubleVar(value=0)
         self.progress_text = tk.StringVar(value="")
         self._busy = False
@@ -275,8 +297,12 @@ class App(tk.Tk):
         self._row_total = 0
         self._last_result: Optional[Path] = None
         self._last_task_key: Optional[str] = None
+        self._last_good_engine = ENGINE_EASY
+        self._engine_start_gen = 0
         # Drop callback runs inside a Win32 WndProc — never call Tk from there.
         self._drop_queue: queue.Queue[Union[list[Path], BaseException]] = queue.Queue()
+        # Worker thread must not call Tk; main loop drains this queue.
+        self._engine_ui_queue: queue.Queue[tuple] = queue.Queue()
 
         self._build()
         self.apply_theme()
@@ -289,6 +315,7 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(50, self._boot)
         self.after(200, self._poll_drop_queue)
+        self.after(50, self._poll_engine_ui_queue)
 
     def _build(self) -> None:
         self.root_frame = ttk.Frame(self, padding=12)
@@ -339,6 +366,7 @@ class App(tk.Tk):
         ttk.Label(self.status_frame, textvariable=self.status_python).pack(anchor=tk.W)
         ttk.Label(self.status_frame, textvariable=self.status_libs).pack(anchor=tk.W)
         ttk.Label(self.status_frame, textvariable=self.status_models).pack(anchor=tk.W)
+        ttk.Label(self.status_frame, textvariable=self.status_tesseract).pack(anchor=tk.W)
 
         actions = ttk.Frame(self.root_frame)
         actions.pack(fill=tk.X, pady=4)
@@ -346,6 +374,8 @@ class App(tk.Tk):
         self.btn_install.pack(side=tk.LEFT)
         self.btn_models = ttk.Button(actions, command=self.on_download_models)
         self.btn_models.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_tesseract = ttk.Button(actions, command=self.on_install_tesseract)
+        self.btn_tesseract.pack(side=tk.LEFT, padx=(8, 0))
         self.btn_refresh = ttk.Button(actions, command=self.refresh_status)
         self.btn_refresh.pack(side=tk.LEFT, padx=(8, 0))
 
@@ -431,6 +461,7 @@ class App(tk.Tk):
         self.status_frame.configure(text=t("gui.status"))
         self.btn_install.configure(text=t("gui.install"))
         self.btn_models.configure(text=t("gui.models"))
+        self.btn_tesseract.configure(text=t("gui.tesseract_install"))
         self.btn_refresh.configure(text=t("gui.refresh"))
         self.drop_frame.configure(text=t("gui.document"))
         self.drop_label.configure(text=t("gui.drop_hint"))
@@ -556,10 +587,24 @@ class App(tk.Tk):
         save_engine_pref(engine)
         if self._engine_ready and self._engine.engine_name == engine:
             return
-        if self._busy or self._engine_starting:
+        if self._busy:
             return
-        self._engine_ready = False
+        if engine == ENGINE_TESSERACT and not is_tesseract_ready():
+            if messagebox.askyesno(
+                t("gui.tesseract_prompt_title"),
+                t("gui.tesseract_prompt_body"),
+            ):
+                self.on_install_tesseract()
+                return
+            fallback = self._last_good_engine or ENGINE_EASY
+            self.ui_engine.set(fallback)
+            save_engine_pref(fallback)
+            return
+        # Abort in-flight start so combo is never stuck on _engine_starting.
         self._engine.stop()
+        self._engine_start_gen += 1
+        self._engine_starting = False
+        self._engine_ready = False
         self.append_log(t("gui.engine_restart", engine=engine))
         self._maybe_start_engine(force=True)
 
@@ -595,10 +640,29 @@ class App(tk.Tk):
             pass
         self.after(200, self._poll_drop_queue)
 
+    def _poll_engine_ui_queue(self) -> None:
+        try:
+            while True:
+                item = self._engine_ui_queue.get_nowait()
+                kind = item[0]
+                gen = item[1]
+                if gen != self._engine_start_gen:
+                    continue
+                if kind == "progress":
+                    self._on_engine_progress(item[2], item[3])
+                elif kind == "ready":
+                    self._on_engine_ready()
+                elif kind == "failed":
+                    self._on_engine_failed(item[2])
+        except queue.Empty:
+            pass
+        self.after(50, self._poll_engine_ui_queue)
+
     def _paint_status_placeholder(self) -> None:
         self.status_python.set("…")
         self.status_libs.set("…")
         self.status_models.set("…")
+        self.status_tesseract.set("…")
         self.btn_file.configure(state=tk.DISABLED)
         self.btn_folder.configure(state=tk.DISABLED)
         self.progress_text.set(t("gui.progress"))
@@ -633,9 +697,17 @@ class App(tk.Tk):
         else:
             self.status_models.set(t("gui.models_missing"))
 
+        tess_exe = resolve_tesseract_cmd()
+        if is_tesseract_ready() and tess_exe is not None:
+            self.status_tesseract.set(t("gui.tesseract_ready", path=tess_exe.name))
+        else:
+            self.status_tesseract.set(t("gui.tesseract_missing"))
+
         engine_name = normalize_engine(self.ui_engine.get())
         backend_ready = (
-            models_ready() if engine_name == ENGINE_EASY else True
+            models_ready()
+            if engine_name == ENGINE_EASY
+            else is_tesseract_ready()
         )
         can_run = (
             libs_ok
@@ -651,6 +723,9 @@ class App(tk.Tk):
         self.btn_models.configure(
             state=tk.DISABLED if self._busy or not libs_ok else tk.NORMAL
         )
+        self.btn_tesseract.configure(
+            state=tk.DISABLED if self._busy or is_tesseract_ready() else tk.NORMAL
+        )
 
     def _maybe_start_engine(self, *, force: bool = False) -> None:
         if not force and (self._engine_ready or self._engine_starting):
@@ -662,7 +737,11 @@ class App(tk.Tk):
         engine_name = normalize_engine(self.ui_engine.get())
         if engine_name == ENGINE_EASY and not models_ready():
             return
+        if engine_name == ENGINE_TESSERACT and not is_tesseract_ready():
+            return
 
+        self._engine_start_gen += 1
+        start_gen = self._engine_start_gen
         self._engine_starting = True
         self._engine_ready = False
         self.refresh_status()
@@ -673,15 +752,14 @@ class App(tk.Tk):
             try:
                 self._engine.start(
                     engine=engine_name,
-                    on_progress=lambda current, total: self.after(
-                        0,
-                        lambda c=current, n=total: self._on_engine_progress(c, n),
+                    on_progress=lambda current, total: self._engine_ui_queue.put(
+                        ("progress", start_gen, current, total)
                     ),
                 )
             except Exception as error:  # noqa: BLE001
-                self.after(0, lambda: self._on_engine_failed(error))
+                self._engine_ui_queue.put(("failed", start_gen, error))
             else:
-                self.after(0, self._on_engine_ready)
+                self._engine_ui_queue.put(("ready", start_gen))
 
         threading.Thread(target=target, daemon=True).start()
 
@@ -692,17 +770,28 @@ class App(tk.Tk):
     def _on_engine_ready(self) -> None:
         self._engine_starting = False
         self._engine_ready = True
+        self._last_good_engine = normalize_engine(self.ui_engine.get())
         self._set_progress(3, 3)
         self.append_log(t("gui.engine_ready"))
         self.refresh_status()
 
     def _on_engine_failed(self, error: Exception) -> None:
+        failed = normalize_engine(self.ui_engine.get())
         self._engine_starting = False
         self._engine_ready = False
         self._reset_progress()
         self.append_log(t("gui.engine_failed", error=error))
         self.refresh_status()
         messagebox.showerror("OCR", t("gui.engine_failed", error=error))
+        # Restore last working engine so UI is not stuck without a worker.
+        fallback = self._last_good_engine or ENGINE_EASY
+        if failed != fallback and libs_installed():
+            if fallback == ENGINE_EASY and not models_ready():
+                return
+            self.ui_engine.set(fallback)
+            save_engine_pref(fallback)
+            self.append_log(t("gui.engine_restart", engine=fallback))
+            self._maybe_start_engine(force=True)
 
     def _restart_engine(self) -> None:
         self._engine.stop()
@@ -719,6 +808,12 @@ class App(tk.Tk):
 
     def on_download_models(self) -> None:
         self._run_background("gui.task_models", self._download_models)
+
+    def on_install_tesseract(self) -> None:
+        self._run_background("gui.task_tesseract", self._install_tesseract)
+
+    def _install_tesseract(self) -> None:
+        install_tesseract_local(self._log_threadsafe)
 
     def on_pick_file(self) -> None:
         path = filedialog.askopenfilename(
@@ -827,10 +922,14 @@ class App(tk.Tk):
             self._restart_engine()
         elif title_key == "gui.task_models":
             self._restart_engine()
+        elif title_key == "gui.task_tesseract":
+            messagebox.showinfo("OCR", t("gui.tesseract_done_body"))
+            if normalize_engine(self.ui_engine.get()) == ENGINE_TESSERACT:
+                self._restart_engine()
 
     def _on_worker_error(self, title_key: str, error: Exception) -> None:
         self._busy = False
-        if title_key in {"gui.task_ocr", "gui.task_models"}:
+        if title_key in {"gui.task_ocr", "gui.task_models", "gui.task_tesseract"}:
             self._stop_wait_timer()
             self._reset_progress()
         title = t(title_key)

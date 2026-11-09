@@ -40,17 +40,24 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "cli.no_spell_help": "Не исправлять орфографию по офлайн-словарю (по умолчанию исправление включено).",
         "cli.no_fix_caps_help": "Не исправлять странный регистр вроде гОД (по умолчанию исправление включено).",
         "cli.strip_junk_help": "Удалить мусорные символы OCR вроде ~ < > (по умолчанию выключено).",
-        "cli.download_help": "Один раз скачать модели в папку models. Единственная команда, которой нужен интернет.",
+        "cli.download_help": "Один раз скачать модели EasyOCR в папку models (нужен интернет; отдельно от pip и установки Tesseract).",
+        "err.offline_blocked": "Сеть заблокирована на этапе распознавания (offline). Установите модели/Tesseract заранее.",
         "cli.worker_help": "Держать выбранный OCR-движок в памяти и принимать JSON-задания из stdin (для GUI).",
         "cli.ui_help": "Язык интерфейса: ru (по умолчанию) или en.",
         "err.need_ocr_lang": "Укажите хотя бы один язык OCR, например --lang ru.",
         "err.bad_engine": "Неизвестный движок OCR «{engine}». Допустимо: {allowed}.",
         "err.no_pytesseract": "Не установлен пакет pytesseract. Выполните «Установить библиотеки».",
         "err.no_tesseract": (
-            "Tesseract OCR не найден в PATH.\n"
-            "Установите бинарник (например UB-Mannheim) и языки rus/eng,\n"
+            "Tesseract OCR не найден (PATH / стандартные папки).\n"
+            "Нажмите «Установить Tesseract» в окне программы,\n"
+            "или задайте TESSERACT_CMD / файл tesseract_cmd.txt,\n"
             "либо используйте --engine easyocr."
         ),
+        "err.tesseract_windows_only": "Автоустановка Tesseract поддерживается только на Windows.",
+        "err.tesseract_download_failed": "Не удалось скачать Tesseract: {error}",
+        "err.tesseract_extract_failed": "Не удалось распаковать установщик Tesseract.",
+        "err.tesseract_extract_failed_detail": "Не удалось распаковать Tesseract: {detail}",
+        "err.tesseract_langs_missing": "После установки не найдены языки eng/rus (tessdata).",
         "err.download_with_images": (
             "Загрузка моделей запускается отдельно, без путей к фото:\n"
             "  python ocr.py --download-models"
@@ -109,7 +116,29 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.status": "Состояние",
         "gui.install": "Установить библиотеки",
         "gui.models": "Загрузить модели",
+        "gui.tesseract_install": "Установить Tesseract",
         "gui.refresh": "Обновить статус",
+        "gui.tesseract_ready": "Tesseract: готов ({path})",
+        "gui.tesseract_missing": "Tesseract: не установлен",
+        "gui.task_tesseract": "Установка Tesseract",
+        "gui.tesseract_prompt_title": "Tesseract",
+        "gui.tesseract_prompt_body": (
+            "Движок Tesseract не найден.\n"
+            "Скачать и установить локальную копию (rus+eng) сейчас?\n"
+            "Нужен интернет; установка в %LOCALAPPDATA%\\DocOCR\\tesseract."
+        ),
+        "gui.tesseract_already": "Tesseract уже доступен: {path}",
+        "gui.tesseract_download_setup": "Скачиваю установщик Tesseract…",
+        "gui.tesseract_download_7zip": "Скачиваю 7zr для распаковки…",
+        "gui.tesseract_extracting": "Распаковываю Tesseract…",
+        "gui.tesseract_installing": "Копирую файлы в {path}…",
+        "gui.tesseract_download_langs": "Скачиваю языки eng/rus (tessdata)…",
+        "gui.tesseract_fetch": "Загрузка: {url}",
+        "gui.tesseract_ready_log": "Tesseract готов: {path}",
+        "gui.tesseract_done_body": (
+            "Tesseract установлен локально.\n"
+            "Можно выбрать движок «tesseract» в списке."
+        ),
         "gui.document": "Документ",
         "gui.drop_hint": "Перетащите сюда фото или папку\nили выберите кнопкой / Ctrl+V",
         "gui.pick_file": "Выбрать файл…",
@@ -211,17 +240,24 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "cli.no_spell_help": "Disable offline dictionary spell-fix (enabled by default).",
         "cli.no_fix_caps_help": "Disable odd capitalization fixes like гОД (enabled by default).",
         "cli.strip_junk_help": "Remove OCR junk characters like ~ < > (off by default).",
-        "cli.download_help": "Download models into models/ once. The only command that needs the internet.",
+        "cli.download_help": "Download EasyOCR models into models/ once (needs internet; separate from pip and Tesseract install).",
+        "err.offline_blocked": "Network blocked during recognition (offline). Install models/Tesseract beforehand.",
         "cli.worker_help": "Keep the selected OCR engine in memory and accept JSON jobs from stdin (for the GUI).",
         "cli.ui_help": "UI language: ru (default) or en.",
         "err.need_ocr_lang": "Provide at least one OCR language, e.g. --lang ru.",
         "err.bad_engine": "Unknown OCR engine \"{engine}\". Allowed: {allowed}.",
         "err.no_pytesseract": "pytesseract is not installed. Run Install libraries.",
         "err.no_tesseract": (
-            "Tesseract OCR was not found on PATH.\n"
-            "Install the binary (e.g. UB-Mannheim) with rus/eng data,\n"
+            "Tesseract OCR was not found (PATH / common folders).\n"
+            "Click «Install Tesseract» in the app window,\n"
+            "or set TESSERACT_CMD / tesseract_cmd.txt,\n"
             "or use --engine easyocr."
         ),
+        "err.tesseract_windows_only": "Automatic Tesseract install is supported on Windows only.",
+        "err.tesseract_download_failed": "Could not download Tesseract: {error}",
+        "err.tesseract_extract_failed": "Could not extract the Tesseract installer.",
+        "err.tesseract_extract_failed_detail": "Could not extract Tesseract: {detail}",
+        "err.tesseract_langs_missing": "eng/rus tessdata missing after install.",
         "err.download_with_images": (
             "Model download runs alone, without image paths:\n"
             "  python ocr.py --download-models"
@@ -280,7 +316,29 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.status": "Status",
         "gui.install": "Install libraries",
         "gui.models": "Download models",
+        "gui.tesseract_install": "Install Tesseract",
         "gui.refresh": "Refresh status",
+        "gui.tesseract_ready": "Tesseract: ready ({path})",
+        "gui.tesseract_missing": "Tesseract: not installed",
+        "gui.task_tesseract": "Installing Tesseract",
+        "gui.tesseract_prompt_title": "Tesseract",
+        "gui.tesseract_prompt_body": (
+            "Tesseract engine was not found.\n"
+            "Download and install a local copy (rus+eng) now?\n"
+            "Internet required; installs to %LOCALAPPDATA%\\DocOCR\\tesseract."
+        ),
+        "gui.tesseract_already": "Tesseract already available: {path}",
+        "gui.tesseract_download_setup": "Downloading Tesseract installer…",
+        "gui.tesseract_download_7zip": "Downloading 7zr for extraction…",
+        "gui.tesseract_extracting": "Extracting Tesseract…",
+        "gui.tesseract_installing": "Copying files to {path}…",
+        "gui.tesseract_download_langs": "Downloading eng/rus tessdata…",
+        "gui.tesseract_fetch": "Fetching: {url}",
+        "gui.tesseract_ready_log": "Tesseract ready: {path}",
+        "gui.tesseract_done_body": (
+            "Tesseract installed locally.\n"
+            "You can select the «tesseract» engine in the list."
+        ),
         "gui.document": "Document",
         "gui.drop_hint": "Drop a photo or folder here\nor use the buttons / Ctrl+V",
         "gui.pick_file": "Choose file…",

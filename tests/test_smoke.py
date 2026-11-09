@@ -87,6 +87,97 @@ class EngineSmokeTests(unittest.TestCase):
         engine = TesseractEngine(["ru", "en"])
         engine.warm()
 
+    def test_resolve_tesseract_cmd_reads_pref_file(self) -> None:
+        import engines
+        from engines import resolve_tesseract_cmd
+
+        fake_exe = Path(self._temp_dir()) / "tesseract.exe"
+        fake_exe.write_bytes(b"")
+        original = engines.TESSERACT_CMD_FILE
+        engines.TESSERACT_CMD_FILE = Path(self._temp_dir()) / "tesseract_cmd.txt"
+        try:
+            engines.TESSERACT_CMD_FILE.write_text(str(fake_exe) + "\n", encoding="utf-8")
+            self.assertEqual(resolve_tesseract_cmd(), fake_exe)
+        finally:
+            engines.TESSERACT_CMD_FILE = original
+
+    def test_is_tesseract_ready_false_without_langs(self) -> None:
+        import engines
+        from tesseract_setup import is_tesseract_ready
+
+        fake_root = Path(self._temp_dir())
+        fake_exe = fake_root / "tesseract.exe"
+        fake_exe.write_bytes(b"")
+        original = engines.TESSERACT_CMD_FILE
+        engines.TESSERACT_CMD_FILE = fake_root / "tesseract_cmd.txt"
+        try:
+            engines.TESSERACT_CMD_FILE.write_text(str(fake_exe) + "\n", encoding="utf-8")
+            self.assertFalse(is_tesseract_ready())
+        finally:
+            engines.TESSERACT_CMD_FILE = original
+
+    def _temp_dir(self) -> str:
+        import tempfile
+
+        if not hasattr(self, "_tmpdir"):
+            self._tmpdir = tempfile.mkdtemp(prefix="dococr-tess-test-")
+        return self._tmpdir
+
+
+class OfflineGuardTests(unittest.TestCase):
+    def test_offline_session_blocks_urlopen(self) -> None:
+        import urllib.request
+
+        from offline_guard import offline_session
+
+        with offline_session():
+            with self.assertRaises(ocr.OcrError) as ctx:
+                urllib.request.urlopen("https://example.com/")
+        self.assertIn("offline", str(ctx.exception).lower())
+
+    def test_create_reader_without_download_does_not_call_urlopen(self) -> None:
+        import urllib.request
+
+        calls: list[object] = []
+        original = urllib.request.urlopen
+
+        def tracking(*args: object, **kwargs: object) -> object:
+            calls.append((args, kwargs))
+            return original(*args, **kwargs)
+
+        urllib.request.urlopen = tracking  # type: ignore[assignment]
+        try:
+            if ocr.local_models_present():
+                ocr.create_reader(["ru"], allow_download=False)
+            else:
+                with self.assertRaises(ocr.OcrError):
+                    ocr.create_reader(["ru"], allow_download=False)
+            self.assertEqual(calls, [])
+        finally:
+            urllib.request.urlopen = original  # type: ignore[assignment]
+
+    def test_tesseract_setup_import_is_offline(self) -> None:
+        import urllib.request
+
+        calls: list[object] = []
+        original = urllib.request.urlopen
+
+        def tracking(*args: object, **kwargs: object) -> object:
+            calls.append((args, kwargs))
+            raise AssertionError("unexpected network")
+
+        urllib.request.urlopen = tracking  # type: ignore[assignment]
+        try:
+            import importlib
+
+            import tesseract_setup
+
+            importlib.reload(tesseract_setup)
+            self.assertFalse(tesseract_setup.is_tesseract_ready())
+            self.assertEqual(calls, [])
+        finally:
+            urllib.request.urlopen = original  # type: ignore[assignment]
+
 
 class PreprocessSmokeTests(unittest.TestCase):
     def test_full_frame_page_keeps_size(self) -> None:

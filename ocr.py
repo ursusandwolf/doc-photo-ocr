@@ -39,6 +39,7 @@ from image_paths import PathError as ImagePathError
 from image_paths import collect_images as collect_image_paths
 from engines import DEFAULT_ENGINE, create_engine, normalize_engine
 from errors import OcrError
+from offline_guard import offline_session
 from preprocess import find_document_corners, invert_image, preprocess
 from spellcheck import correct_text
 
@@ -184,18 +185,19 @@ def run(args: argparse.Namespace) -> None:
 
     print(t("msg.files_count", count=len(image_paths)))
     engine = create_engine(engine_name, languages, allow_download=False)
-    engine.warm()
     documents: list[RecognizedDocument] = []
-    for image_path in image_paths:
-        print(t("msg.processing", path=image_path))
-        documents.append(
-            recognize_file(
-                engine,
-                image_path,
-                preprocess_image=not args.no_preprocess,
-                invert=bool(args.invert),
+    with offline_session():
+        engine.warm()
+        for image_path in image_paths:
+            print(t("msg.processing", path=image_path))
+            documents.append(
+                recognize_file(
+                    engine,
+                    image_path,
+                    preprocess_image=not args.no_preprocess,
+                    invert=bool(args.invert),
+                )
             )
-        )
 
     spell = not args.no_spell
     fix_caps = not args.no_fix_caps
@@ -277,19 +279,29 @@ def download_models(languages: Sequence[str]) -> None:
 
 def emit_worker(tag: str, payload: str = "") -> None:
     """Machine-readable line for the GUI worker protocol."""
-    message = f"##{tag}" if not payload else f"##{tag} {payload}"
+    # One physical line only — newlines would break the GUI reader.
+    safe = " ".join(str(payload).split())
+    message = f"##{tag}" if not safe else f"##{tag} {safe}"
     print(message, flush=True)
 
 
 def run_worker(languages: Sequence[str], *, engine_name: str = DEFAULT_ENGINE) -> None:
     """Keep one OCR backend loaded and accept JSON recognize jobs on stdin."""
     engine_name = normalize_engine(engine_name)
-    emit_worker("PROGRESS", "1/3 importing")
-    engine = create_engine(engine_name, languages, allow_download=False)
-    emit_worker("PROGRESS", "2/3 loading")
-    engine.warm()
-    emit_worker("PROGRESS", "3/3 ready")
-    emit_worker("READY")
+    try:
+        emit_worker("PROGRESS", "1/3 importing")
+        engine = create_engine(engine_name, languages, allow_download=False)
+        emit_worker("PROGRESS", "2/3 loading")
+        with offline_session():
+            engine.warm()
+        emit_worker("PROGRESS", "3/3 ready")
+        emit_worker("READY")
+    except OcrError as error:
+        emit_worker("ERROR", str(error))
+        return
+    except Exception as error:  # noqa: BLE001
+        emit_worker("ERROR", str(error))
+        return
 
     for raw in sys.stdin:
         line = raw.strip()
@@ -313,7 +325,8 @@ def run_worker(languages: Sequence[str], *, engine_name: str = DEFAULT_ENGINE) -
             continue
 
         try:
-            handle_worker_recognize(engine, request)
+            with offline_session():
+                handle_worker_recognize(engine, request)
             emit_worker("OK")
         except OcrError as error:
             emit_worker("ERROR", str(error))

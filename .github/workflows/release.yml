@@ -45,6 +45,8 @@ jobs:
             "errors.py",
             "preprocess.py",
             "spellcheck.py",
+            "tesseract_setup.py",
+            "offline_guard.py",
             "i18n.py",
             "image_paths.py",
             "requirements.txt",

@@ -6,6 +6,9 @@ Both return ocr.TextLine so preprocess/spellcheck stay engine-agnostic.
 
 from __future__ import annotations
 
+import os
+import shutil
+from pathlib import Path
 from typing import Any, Callable, Optional, Protocol, Sequence
 
 import cv2
@@ -16,6 +19,17 @@ ENGINE_EASY = "easyocr"
 ENGINE_TESSERACT = "tesseract"
 ENGINE_NAMES = (ENGINE_EASY, ENGINE_TESSERACT)
 DEFAULT_ENGINE = ENGINE_EASY
+
+# Optional override file next to the app (one line = full path to tesseract.exe).
+TESSERACT_CMD_FILE = Path(__file__).resolve().parent / "tesseract_cmd.txt"
+
+_WINDOWS_TESSERACT_CANDIDATES = (
+    Path(os.environ.get("LOCALAPPDATA", "")) / "DocOCR" / "tesseract" / "tesseract.exe",
+    Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
+    Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Tesseract-OCR" / "tesseract.exe",
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Tesseract-OCR" / "tesseract.exe",
+)
 
 # EasyOCR codes -> Tesseract traineddata names.
 _TESS_LANG = {
@@ -80,6 +94,37 @@ def create_engine(
     return EasyOcrEngine(languages, allow_download=allow_download)
 
 
+def resolve_tesseract_cmd() -> Optional[Path]:
+    """Find tesseract.exe: env, pref file, PATH, then common Windows folders."""
+    env = (os.environ.get("TESSERACT_CMD") or "").strip().strip('"')
+    if env:
+        path = Path(env)
+        if path.is_file():
+            return path
+
+    try:
+        if TESSERACT_CMD_FILE.is_file():
+            raw = TESSERACT_CMD_FILE.read_text(encoding="utf-8").strip().strip('"')
+            if raw:
+                path = Path(raw)
+                if path.is_file():
+                    return path
+    except OSError:
+        pass
+
+    which = shutil.which("tesseract")
+    if which:
+        path = Path(which)
+        if path.is_file():
+            return path
+
+    if os.name == "nt":
+        for candidate in _WINDOWS_TESSERACT_CANDIDATES:
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 def ensure_tesseract_available() -> None:
     """Fail fast with a clear message when tesseract.exe is missing."""
     from errors import OcrError
@@ -89,6 +134,10 @@ def ensure_tesseract_available() -> None:
         import pytesseract
     except ModuleNotFoundError as error:
         raise OcrError(t("err.no_pytesseract")) from error
+
+    resolved = resolve_tesseract_cmd()
+    if resolved is not None:
+        pytesseract.pytesseract.tesseract_cmd = str(resolved)
 
     try:
         pytesseract.get_tesseract_version()
