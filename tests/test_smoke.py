@@ -572,6 +572,25 @@ class SpellcheckSmokeTests(unittest.TestCase):
         )
         self.assertEqual(kept, "фирма «СеверТорг»")
 
+    def test_normalizes_ocr_lookalikes_copyright_and_dollar(self) -> None:
+        self.assertEqual(
+            spellcheck.normalize_ocr_lookalikes("договор © ООО «Ромашка»"),
+            "договор с ООО «Ромашка»",
+        )
+        self.assertEqual(
+            spellcheck.normalize_ocr_lookalikes("сумма 1$0 руб."),
+            "сумма 180 руб.",
+        )
+        fixed = spellcheck.correct_text(
+            "договор © стороной на 1$5",
+            spell=False,
+            fix_caps=False,
+            strip_junk=False,
+        )
+        self.assertEqual(fixed, "договор с стороной на 185")
+        self.assertNotIn("©", fixed)
+        self.assertNotIn("$", fixed)
+
     def test_document_text_respects_no_spell(self) -> None:
         lines = (
             ocr.TextLine(

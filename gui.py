@@ -67,6 +67,7 @@ THEMES: dict[str, dict[str, str]] = {
         "button": "#e4e4e4",
         "button_active": "#d0d0d0",
         "button_disabled": "#bdbdbd",
+        "button_disabled_fg": "#424242",
         "accent": "#1565c0",
         "trough": "#cfcfcf",
         "select": "#c5d8f0",
@@ -81,6 +82,7 @@ THEMES: dict[str, dict[str, str]] = {
         "button": "#6e6e6e",
         "button_active": "#7a7a7a",
         "button_disabled": "#8a8a8a",
+        "button_disabled_fg": "#f2f2f2",
         "accent": "#90caf9",
         "trough": "#3a3a3a",
         "select": "#607d8b",
@@ -95,6 +97,7 @@ THEMES: dict[str, dict[str, str]] = {
         "button": "#3a3a3a",
         "button_active": "#4a4a4a",
         "button_disabled": "#6a6a6a",
+        "button_disabled_fg": "#e6e6e6",
         "accent": "#64b5f6",
         "trough": "#121212",
         "select": "#37474f",
@@ -549,7 +552,8 @@ class App(tk.Tk):
                 ("active", palette["button_active"]),
                 ("disabled", palette["button_disabled"]),
             ],
-            foreground=[("disabled", palette["button_disabled"])],
+            # Keep label readable on gray disabled buttons (was same as bg).
+            foreground=[("disabled", palette["button_disabled_fg"])],
         )
         style.configure(
             "StatusOk.TLabel",

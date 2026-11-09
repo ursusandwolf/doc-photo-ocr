@@ -26,8 +26,18 @@ MIN_WORD_LEN = 3
 
 # Always drop these — almost never valid in Russian office OCR.
 # Guillemets «» are kept (Russian quotation marks).
+# © / $ are remapped in normalize_ocr_lookalikes (©→с, $→8), not dropped.
 ALWAYS_JUNK = frozenset(
-    "~`^|\\<>‚‘’…�•§¤¿¡□■◆◇▪▫●○★☆►◄▲▼©®™"
+    "~`^|\\<>‚‘’…�•§¤¿¡□■◆◇▪▫●○★☆►◄▲▼®™"
+)
+
+# Frequent EasyOCR/Tesseract confusions on Cyrillic office photos.
+OCR_LOOKALIKES = str.maketrans(
+    {
+        "©": "с",  # conjunction «с» / letter с
+        "¢": "с",
+        "$": "8",
+    }
 )
 
 # If 2+ of these sit in a row, the whole run is OCR garbage
@@ -193,6 +203,13 @@ def normalize_guillemets(text: str) -> str:
     return cleaned
 
 
+def normalize_ocr_lookalikes(text: str) -> str:
+    """Map common OCR glyph confusions (©→с, $→8) before other polish."""
+    if not text:
+        return text
+    return text.translate(OCR_LOOKALIKES)
+
+
 def strip_junk_text(text: str) -> str:
     """Remove OCR garbage characters; keep e-mail addresses and phone numbers."""
     if not text:
@@ -212,8 +229,9 @@ def correct_text(
     if not text:
         return text
 
-    # Guillemets first so „…“ / "…" become «…» and are not treated as junk.
+    # Guillemets + lookalikes always — they fix structure, not optional polish.
     working = normalize_guillemets(text)
+    working = normalize_ocr_lookalikes(working)
     if not spell and not fix_caps and not strip_junk:
         return working
 
