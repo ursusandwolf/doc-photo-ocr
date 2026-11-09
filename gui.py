@@ -462,6 +462,7 @@ def resolve_command_python(command: tuple[str, ...]) -> Optional[Path]:
             capture_output=True,
             text=True,
             timeout=20,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -486,6 +487,7 @@ def python_is_compatible(executable: Path) -> bool:
             capture_output=True,
             text=True,
             timeout=20,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -509,6 +511,7 @@ def python_version_string(executable: Path) -> str:
             capture_output=True,
             text=True,
             timeout=20,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return "?"
@@ -536,6 +539,7 @@ def libs_ready() -> bool:
             capture_output=True,
             text=True,
             timeout=120,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -544,6 +548,15 @@ def libs_ready() -> bool:
 
 def models_ready() -> bool:
     return MODELS_DIR.is_dir() and any(MODELS_DIR.glob("*.pth"))
+
+
+def hidden_subprocess_kwargs() -> dict:
+    """Prevent black console flashes on Windows GUI subprocesses."""
+    if os.name != "nt":
+        return {}
+    # Available on Windows since Python 3.7.
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return {"creationflags": flag} if flag else {}
 
 
 def run_checked(
@@ -561,6 +574,7 @@ def run_checked(
         text=True,
         encoding="utf-8",
         errors="replace",
+        **hidden_subprocess_kwargs(),
     )
     assert process.stdout is not None
     for line in process.stdout:
