@@ -40,7 +40,9 @@ from preprocess import find_document_corners, preprocess
 DEFAULT_LANGUAGES = "ru+en"
 DEFAULT_OUTPUT = Path("result.txt")
 MODEL_DIR = Path(__file__).resolve().parent / "models"
+# Fallback when a box has almost zero height; real threshold uses box height.
 LINE_GROUP_PIXELS = 15
+LINE_GROUP_HEIGHT_RATIO = 0.6
 
 # EasyOCR stores detection/recognition weights under models/.
 # Without .pth files we fail early with a clear offline error.
@@ -327,9 +329,10 @@ def silence_library_noise() -> Iterator[None]:
 
 
 def read_lines(reader: Any, image: np.ndarray, path: Path) -> list[TextLine]:
-    """Run OCR and sort blocks top-to-bottom, left-to-right."""
+    """Run OCR. Word boxes are kept separate; document_text joins them into lines."""
     try:
         with silence_library_noise():
+            # paragraph=False keeps boxes; we rebuild lines ourselves for stable order.
             raw_rows = reader.readtext(image, detail=1, paragraph=False)
     except Exception as error:
         raise OcrError(t("err.recognize", name=path.name, error=error)) from error
@@ -337,16 +340,55 @@ def read_lines(reader: Any, image: np.ndarray, path: Path) -> list[TextLine]:
     lines: list[TextLine] = []
     for box, text, confidence in raw_rows:
         points = tuple((int(x), int(y)) for x, y in box)
-        lines.append(TextLine(text=str(text), confidence=float(confidence), box=points))
-    return sorted(lines, key=reading_order_key)
+        cleaned = str(text).strip()
+        if cleaned:
+            lines.append(TextLine(text=cleaned, confidence=float(confidence), box=points))
+    return lines
 
 
-def reading_order_key(line: TextLine) -> tuple[int, int]:
-    """Reading-order sort key. Nearby vertical boxes share one row bucket."""
-    top = min(y for _x, y in line.box)
-    left = min(x for x, _y in line.box)
-    row = top // LINE_GROUP_PIXELS
-    return row, left
+def box_left(line: TextLine) -> int:
+    return min(x for x, _y in line.box)
+
+
+def box_top(line: TextLine) -> int:
+    return min(y for _x, y in line.box)
+
+
+def box_bottom(line: TextLine) -> int:
+    return max(y for _x, y in line.box)
+
+
+def box_center_y(line: TextLine) -> float:
+    return (box_top(line) + box_bottom(line)) / 2.0
+
+
+def box_height(line: TextLine) -> int:
+    return max(1, box_bottom(line) - box_top(line))
+
+
+def same_text_row(anchor: TextLine, candidate: TextLine) -> bool:
+    """True when two boxes sit on the same visual text line."""
+    threshold = max(
+        LINE_GROUP_PIXELS,
+        LINE_GROUP_HEIGHT_RATIO * max(box_height(anchor), box_height(candidate)),
+    )
+    return abs(box_center_y(anchor) - box_center_y(candidate)) <= threshold
+
+
+def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
+    """Group word boxes into rows, then left-to-right within each row."""
+    if not lines:
+        return []
+
+    ordered = sorted(lines, key=lambda item: (box_top(item), box_left(item)))
+    rows: list[list[TextLine]] = [[ordered[0]]]
+    for item in ordered[1:]:
+        if same_text_row(rows[-1][0], item):
+            rows[-1].append(item)
+        else:
+            rows.append([item])
+
+    return [sorted(row, key=box_left) for row in rows]
 
 
 def render_documents(documents: Sequence[RecognizedDocument]) -> str:
@@ -362,10 +404,16 @@ def render_documents(documents: Sequence[RecognizedDocument]) -> str:
 
 
 def document_text(document: RecognizedDocument) -> str:
-    parts = [line.text.strip() for line in document.lines if line.text.strip()]
-    if not parts:
+    """Join words on the same visual row with spaces; rows with newlines."""
+    rows = group_lines_into_rows(document.lines)
+    rendered = [
+        " ".join(part.text for part in row if part.text)
+        for row in rows
+    ]
+    rendered = [line for line in rendered if line]
+    if not rendered:
         return t("msg.no_text")
-    return "\n".join(parts)
+    return "\n".join(rendered)
 
 
 def render_debug(documents: Sequence[RecognizedDocument]) -> str:

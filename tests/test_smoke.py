@@ -81,6 +81,23 @@ class UiLangSmokeTests(unittest.TestCase):
         self.assertIn("Распознаёт", t("cli.description"))
 
 
+class TextLayoutSmokeTests(unittest.TestCase):
+    def test_words_on_same_row_join_with_spaces(self) -> None:
+        lines = (
+            ocr.TextLine("Прошу", 0.9, ((10, 100), (80, 100), (80, 130), (10, 130))),
+            ocr.TextLine("предоставить", 0.9, ((90, 102), (220, 102), (220, 132), (90, 132))),
+            ocr.TextLine("отпуск", 0.9, ((230, 98), (320, 98), (320, 128), (230, 128))),
+            ocr.TextLine("Согласно", 0.9, ((10, 160), (100, 160), (100, 190), (10, 190))),
+            ocr.TextLine("графику", 0.9, ((110, 162), (200, 162), (200, 192), (110, 192))),
+        )
+        document = ocr.RecognizedDocument(Path("x.png"), lines)
+        text = ocr.document_text(document)
+        self.assertEqual(
+            text,
+            "Прошу предоставить отпуск\nСогласно графику",
+        )
+
+
 class BatchPathSmokeTests(unittest.TestCase):
     def test_collect_images_from_file_and_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
