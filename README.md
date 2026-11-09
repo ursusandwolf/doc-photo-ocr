@@ -306,6 +306,16 @@ python ocr.py --download-models
 
 В коде `ocr.py` нет адресов сервисов, ключей и облачных OCR.
 
+## Проверка
+
+Минимальный smoke без установки pytest:
+
+```bat
+python -m unittest tests.test_smoke -v
+```
+
+Тест полного OCR пропускается, пока нет файлов в `models`. После `python ocr.py --download-models` он тоже выполняется.
+
 ## Состав
 
 ```text
@@ -313,5 +323,7 @@ ocr.py              программа
 requirements.txt    зависимости
 README.md           эта инструкция
 .gitignore          models, result.txt и служебные файлы Python
+samples/            пример изображения для smoke
+tests/              минимальные smoke-тесты
 models/             появляется после загрузки моделей
 ```
