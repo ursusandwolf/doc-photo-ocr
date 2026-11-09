@@ -36,11 +36,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "cli.debug_help": "Дополнительно сохранить координаты блоков и уверенность распознавания.",
         "cli.no_preprocess_help": "Отдать в OCR исходное фото, без выравнивания и контраста.",
         "cli.download_help": "Один раз скачать модели в папку models. Единственная команда, которой нужен интернет.",
+        "cli.worker_help": "Держать EasyOCR в памяти и принимать JSON-задания из stdin (для GUI).",
         "cli.ui_help": "Язык интерфейса: ru (по умолчанию) или en.",
         "err.need_ocr_lang": "Укажите хотя бы один язык OCR, например --lang ru+en.",
         "err.download_with_images": (
             "Загрузка моделей запускается отдельно, без путей к фото:\n"
             "  python ocr.py --download-models"
+        ),
+        "err.worker_with_images": (
+            "Режим --worker запускается без путей к фото:\n"
+            "  python ocr.py --worker"
         ),
         "err.need_input": (
             "Укажите путь к фотографии или папке.\n"
@@ -149,6 +154,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.files_count": "Файлов: {count}",
         "gui.progress": "Прогресс",
         "gui.progress_file": "{current}/{total}",
+        "gui.loading_models": "Загрузка моделей…",
+        "gui.engine_ready": "Движок OCR готов.",
+        "gui.engine_not_ready": "Сначала дождитесь загрузки моделей.",
+        "gui.engine_failed": "Не удалось загрузить модели: {error}",
         "gui.saved": "Текст сохранён: {path}",
     },
     "en": {
@@ -173,11 +182,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "cli.debug_help": "Also save block coordinates and confidence scores.",
         "cli.no_preprocess_help": "Send the original photo to OCR without geometry/contrast tweaks.",
         "cli.download_help": "Download models into models/ once. The only command that needs the internet.",
+        "cli.worker_help": "Keep EasyOCR in memory and accept JSON jobs from stdin (for the GUI).",
         "cli.ui_help": "UI language: ru (default) or en.",
         "err.need_ocr_lang": "Provide at least one OCR language, e.g. --lang ru+en.",
         "err.download_with_images": (
             "Model download runs alone, without image paths:\n"
             "  python ocr.py --download-models"
+        ),
+        "err.worker_with_images": (
+            "Worker mode runs without image paths:\n"
+            "  python ocr.py --worker"
         ),
         "err.need_input": (
             "Provide a photo or folder path.\n"
@@ -286,6 +300,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.files_count": "Files: {count}",
         "gui.progress": "Progress",
         "gui.progress_file": "{current}/{total}",
+        "gui.loading_models": "Loading models…",
+        "gui.engine_ready": "OCR engine is ready.",
+        "gui.engine_not_ready": "Wait until models finish loading.",
+        "gui.engine_failed": "Failed to load models: {error}",
         "gui.saved": "Text saved: {path}",
     },
 }

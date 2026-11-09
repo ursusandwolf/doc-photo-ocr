@@ -21,6 +21,8 @@ Image prep lives in preprocess.py — no network and no OCR there.
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import sys
 import warnings
 from contextlib import contextmanager
@@ -101,6 +103,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help=t("cli.download_help"),
     )
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help=t("cli.worker_help"),
+    )
     # Re-declare for help text after language is known.
     parser.set_defaults(ui=pre_args.ui)
     for action in parser._actions:
@@ -123,7 +130,7 @@ def parse_languages(value: str) -> list[str]:
 
 
 def run(args: argparse.Namespace) -> None:
-    """Run either model download or recognition."""
+    """Run either model download, GUI worker, or recognition."""
     set_ui_lang(getattr(args, "ui", get_ui_lang()))
     languages = parse_languages(args.lang)
 
@@ -131,6 +138,12 @@ def run(args: argparse.Namespace) -> None:
         if args.images:
             raise OcrError(t("err.download_with_images"))
         download_models(languages)
+        return
+
+    if args.worker:
+        if args.images:
+            raise OcrError(t("err.worker_with_images"))
+        run_worker(languages)
         return
 
     if not args.images:
@@ -210,6 +223,88 @@ def download_models(languages: Sequence[str]) -> None:
     create_reader(languages, allow_download=True)
     print(t("msg.models_saved", path=MODEL_DIR))
     print(t("msg.offline_ready"))
+
+
+def emit_worker(tag: str, payload: str = "") -> None:
+    """Machine-readable line for the GUI worker protocol."""
+    message = f"##{tag}" if not payload else f"##{tag} {payload}"
+    print(message, flush=True)
+
+
+def run_worker(languages: Sequence[str]) -> None:
+    """Keep EasyOCR loaded and accept JSON recognize jobs on stdin."""
+    emit_worker("PROGRESS", "1/3 importing")
+    import_easyocr()
+    emit_worker("PROGRESS", "2/3 loading")
+    reader = create_reader(languages, allow_download=False)
+    emit_worker("PROGRESS", "3/3 ready")
+    emit_worker("READY")
+
+    for raw in sys.stdin:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+        except json.JSONDecodeError as error:
+            emit_worker("ERROR", f"bad json: {error}")
+            continue
+
+        command = str(request.get("cmd", "")).strip().lower()
+        if command in {"quit", "exit"}:
+            emit_worker("BYE")
+            return
+        if command == "ping":
+            emit_worker("PONG")
+            continue
+        if command != "recognize":
+            emit_worker("ERROR", f"unknown cmd: {command}")
+            continue
+
+        try:
+            handle_worker_recognize(reader, request)
+            emit_worker("OK")
+        except OcrError as error:
+            emit_worker("ERROR", str(error))
+        except Exception as error:  # noqa: BLE001
+            emit_worker("ERROR", str(error))
+
+
+def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
+    """Recognize one batch from a worker JSON request and write the output file."""
+    ui = str(request.get("ui") or get_ui_lang())
+    set_ui_lang(ui)
+    images = [Path(item) for item in request.get("images") or []]
+    if not images:
+        raise OcrError(t("err.need_input"))
+    output = Path(request.get("output") or DEFAULT_OUTPUT)
+    no_preprocess = bool(request.get("no_preprocess", False))
+    debug = bool(request.get("debug", False))
+    per_file = bool(request.get("per_file", False))
+
+    for image_path in images:
+        ensure_supported_image(image_path)
+
+    emit_worker("FILES", str(len(images)))
+    documents: list[RecognizedDocument] = []
+    for index, image_path in enumerate(images, start=1):
+        emit_worker("FILE", f"{index}/{len(images)} {image_path}")
+        documents.append(
+            recognize_file(
+                reader,
+                image_path,
+                preprocess_image=not no_preprocess,
+            )
+        )
+
+    if per_file:
+        write_per_file_results(documents, debug=debug)
+        return
+
+    text = render_documents(documents)
+    save_text(output, text)
+    if debug:
+        save_text(debug_output_path(output), render_debug(documents))
 
 
 def ensure_supported_image(path: Path) -> None:
@@ -366,16 +461,114 @@ def box_height(line: TextLine) -> int:
     return max(1, box_bottom(line) - box_top(line))
 
 
-def vertical_overlap_ratio(a: TextLine, b: TextLine) -> float:
+def box_width(line: TextLine) -> int:
+    xs = [x for x, _y in line.box]
+    return max(1, max(xs) - min(xs))
+
+
+def box_reading_angle_degrees(line: TextLine) -> float:
+    """Tilt of the longer left-to-right edge (degrees, CCW from +X)."""
+    points = list(line.box)
+    if len(points) < 2:
+        return 0.0
+    best_dx = 0.0
+    best_dy = 0.0
+    best_len = -1.0
+    for index, start in enumerate(points):
+        end = points[(index + 1) % len(points)]
+        dx = float(end[0] - start[0])
+        dy = float(end[1] - start[1])
+        # Normalize to left -> right so atan2 stays near 0, not ±180.
+        if dx < 0:
+            dx = -dx
+            dy = -dy
+        length = math.hypot(dx, dy)
+        # Prefer the wider edge; ignore near-vertical sides.
+        if length > best_len and abs(dx) >= abs(dy):
+            best_len = length
+            best_dx = dx
+            best_dy = dy
+    if best_len <= 0:
+        return 0.0
+    return math.degrees(math.atan2(best_dy, best_dx))
+
+
+def estimate_page_skew_degrees(lines: Sequence[TextLine]) -> float:
+    """Median text tilt from wide boxes. Positive means text rises to the right."""
+    samples: list[tuple[float, float]] = []
+    for item in lines:
+        width = float(box_width(item))
+        height = float(box_height(item))
+        if width < 1.5 * height:
+            continue
+        angle = box_reading_angle_degrees(item)
+        samples.append((angle, width))
+    if not samples:
+        samples = [(box_reading_angle_degrees(item), float(box_width(item))) for item in lines]
+    if not samples:
+        return 0.0
+
+    # Axis-aligned detector noise (angle≈0) must not cancel a real page skew.
+    tilted = [(angle, weight) for angle, weight in samples if abs(angle) >= 2.0]
+    chosen = tilted if len(tilted) >= max(2, len(samples) // 3) else samples
+    chosen.sort(key=lambda item: item[0])
+    return float(chosen[len(chosen) // 2][0])
+
+
+def rotate_point(
+    x: float,
+    y: float,
+    *,
+    angle_degrees: float,
+    origin: tuple[float, float],
+) -> tuple[float, float]:
+    rad = math.radians(angle_degrees)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    dx = x - origin[0]
+    dy = y - origin[1]
+    return origin[0] + dx * cos_a - dy * sin_a, origin[1] + dx * sin_a + dy * cos_a
+
+
+class FlatBox(NamedTuple):
+    line: TextLine
+    left: float
+    top: float
+    bottom: float
+    center_y: float
+    height: float
+
+
+def flatten_box(line: TextLine, *, skew_degrees: float, origin: tuple[float, float]) -> FlatBox:
+    """Rotate box into page-aligned coordinates (negative skew undoes tilt)."""
+    rotated = [
+        rotate_point(float(x), float(y), angle_degrees=-skew_degrees, origin=origin)
+        for x, y in line.box
+    ]
+    ys = [point[1] for point in rotated]
+    xs = [point[0] for point in rotated]
+    top = min(ys)
+    bottom = max(ys)
+    return FlatBox(
+        line=line,
+        left=min(xs),
+        top=top,
+        bottom=bottom,
+        center_y=(top + bottom) / 2.0,
+        height=max(1.0, bottom - top),
+    )
+
+
+def vertical_overlap_ratio(a: FlatBox, b: FlatBox) -> float:
     """overlap_height / min(heights). 1.0 means fully nested on the Y axis."""
-    top = max(box_top(a), box_top(b))
-    bottom = min(box_bottom(a), box_bottom(b))
-    overlap = max(0, bottom - top)
-    return overlap / float(min(box_height(a), box_height(b)))
+    top = max(a.top, b.top)
+    bottom = min(a.bottom, b.bottom)
+    overlap = max(0.0, bottom - top)
+    return overlap / float(min(a.height, b.height))
 
 
-def row_median_height(row: Sequence[TextLine]) -> float:
-    heights = sorted(box_height(item) for item in row)
+def row_median_height(row: Sequence[FlatBox]) -> float:
+    heights = sorted(item.height for item in row)
     mid = len(heights) // 2
     if not heights:
         return 1.0
@@ -384,27 +577,37 @@ def row_median_height(row: Sequence[TextLine]) -> float:
     return (heights[mid - 1] + heights[mid]) / 2.0
 
 
-def row_mean_center_y(row: Sequence[TextLine]) -> float:
-    return sum(box_center_y(item) for item in row) / float(len(row))
+def row_mean_center_y(row: Sequence[FlatBox]) -> float:
+    return sum(item.center_y for item in row) / float(len(row))
 
 
-def fits_text_row(row: Sequence[TextLine], candidate: TextLine) -> bool:
+def fits_text_row(row: Sequence[FlatBox], candidate: FlatBox) -> bool:
     """True when candidate belongs on this visual text line."""
     best_overlap = max(vertical_overlap_ratio(item, candidate) for item in row)
     if best_overlap >= MIN_VERTICAL_OVERLAP_RATIO:
         return True
     median_h = row_median_height(row)
-    center_gap = abs(row_mean_center_y(row) - box_center_y(candidate))
+    center_gap = abs(row_mean_center_y(row) - candidate.center_y)
     return center_gap <= MAX_CENTER_Y_RATIO * median_h
 
 
 def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
-    """Cluster word boxes by vertical overlap, then left-to-right in each row."""
+    """Cluster word boxes by vertical overlap after undoing page skew."""
     if not lines:
         return []
 
-    ordered = sorted(lines, key=lambda item: (box_center_y(item), box_left(item)))
-    rows: list[list[TextLine]] = []
+    skew = estimate_page_skew_degrees(lines)
+    origin_x = sum(sum(x for x, _y in item.box) for item in lines) / float(
+        4 * len(lines)
+    )
+    origin_y = sum(sum(y for _x, y in item.box) for item in lines) / float(
+        4 * len(lines)
+    )
+    origin = (origin_x, origin_y)
+    flat = [flatten_box(item, skew_degrees=skew, origin=origin) for item in lines]
+
+    ordered = sorted(flat, key=lambda item: (item.center_y, item.left))
+    rows: list[list[FlatBox]] = []
     for item in ordered:
         best_index = -1
         best_score = -1.0
@@ -412,8 +615,7 @@ def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
             if not fits_text_row(row, item):
                 continue
             score = max(vertical_overlap_ratio(existing, item) for existing in row)
-            # Prefer stronger overlap; break ties with closer row center.
-            score += 1.0 / (1.0 + abs(row_mean_center_y(row) - box_center_y(item)))
+            score += 1.0 / (1.0 + abs(row_mean_center_y(row) - item.center_y))
             if score > best_score:
                 best_score = score
                 best_index = index
@@ -422,9 +624,9 @@ def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
         else:
             rows[best_index].append(item)
 
-    rows = [sorted(row, key=box_left) for row in rows]
+    rows = [sorted(row, key=lambda item: item.left) for row in rows]
     rows.sort(key=row_mean_center_y)
-    return rows
+    return [[item.line for item in row] for row in rows]
 
 
 def render_documents(documents: Sequence[RecognizedDocument]) -> str:

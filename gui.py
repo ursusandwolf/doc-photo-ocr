@@ -1,18 +1,20 @@
 """Simple GUI for local A4 document OCR.
 
-1. Find Python 3.9+ (system first, otherwise runtime from the zip).
-2. Install libraries into a local .venv only when missing.
-3. Download models only when missing.
-4. Accept a file/folder and call ocr.py through .venv.
+1. Show the window immediately.
+2. Find Python 3.9+ (system first, otherwise runtime from the zip).
+3. Install libraries into a local .venv only when missing.
+4. Download models only when missing.
+5. Warm a long-lived OCR worker (EasyOCR stays in memory) with a progress bar.
+6. Recognize files through that worker.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import subprocess
 import sys
-import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -34,6 +36,134 @@ RUNTIME_PYTHON = APP_DIR / "runtime" / "python.exe"
 UI_PREF_FILE = APP_DIR / "ui_lang.txt"
 MIN_PYTHON = (3, 9)
 TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
+_LIBS_READY_CACHE: Optional[bool] = None
+
+
+class OcrEngine:
+    """Long-lived `ocr.py --worker` process with EasyOCR already loaded."""
+
+    def __init__(self) -> None:
+        self._process: Optional[subprocess.Popen[str]] = None
+        self._lock = threading.Lock()
+        self.ready = False
+
+    def start(self, *, on_progress: Callable[[int, int], None]) -> None:
+        self.stop()
+        if not VENV_PYTHON.exists():
+            raise RuntimeError(t("gui.need_libs_first"))
+        if not models_ready():
+            raise RuntimeError(t("gui.need_models_first"))
+
+        command = [
+            str(VENV_PYTHON),
+            str(OCR_SCRIPT),
+            "--ui",
+            get_ui_lang(),
+            "--worker",
+        ]
+        self._process = subprocess.Popen(
+            command,
+            cwd=str(APP_DIR),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            **hidden_subprocess_kwargs(),
+        )
+        assert self._process.stdout is not None
+
+        while True:
+            line = self._process.stdout.readline()
+            if not line:
+                code = self._process.poll()
+                raise RuntimeError(f"OCR worker exited early (code {code})")
+            line = line.rstrip("\n")
+            if line.startswith("##PROGRESS "):
+                payload = line[len("##PROGRESS ") :].strip()
+                current, total = parse_progress_fraction(payload)
+                on_progress(current, total)
+            elif line.startswith("##READY"):
+                self.ready = True
+                return
+            elif line.startswith("##ERROR "):
+                raise RuntimeError(line[len("##ERROR ") :].strip())
+
+    def recognize(
+        self,
+        images: Sequence[Path],
+        output: Path,
+        *,
+        ui: str,
+        on_file: Callable[[int, int, str], None],
+    ) -> None:
+        if not self.ready or self._process is None:
+            raise RuntimeError(t("gui.engine_not_ready"))
+        if self._process.stdin is None or self._process.stdout is None:
+            raise RuntimeError(t("gui.engine_not_ready"))
+
+        request = {
+            "cmd": "recognize",
+            "images": [str(path) for path in images],
+            "output": str(output),
+            "ui": ui,
+        }
+        with self._lock:
+            self._process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            self._process.stdin.flush()
+            while True:
+                line = self._process.stdout.readline()
+                if not line:
+                    raise RuntimeError("OCR worker stopped during recognition")
+                line = line.rstrip("\n")
+                if line.startswith("##FILE "):
+                    payload = line[len("##FILE ") :].strip()
+                    current, total, path = parse_file_progress(payload)
+                    on_file(current, total, path)
+                elif line.startswith("##OK"):
+                    return
+                elif line.startswith("##ERROR "):
+                    raise RuntimeError(line[len("##ERROR ") :].strip())
+
+    def stop(self) -> None:
+        self.ready = False
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        try:
+            if process.stdin is not None and process.poll() is None:
+                process.stdin.write('{"cmd":"quit"}\n')
+                process.stdin.flush()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def parse_progress_fraction(payload: str) -> tuple[int, int]:
+    """Parse '2/3 loading' into (2, 3)."""
+    token = payload.split()[0] if payload else "0/1"
+    if "/" not in token:
+        return 0, 1
+    left, right = token.split("/", 1)
+    try:
+        return int(left), max(1, int(right))
+    except ValueError:
+        return 0, 1
+
+
+def parse_file_progress(payload: str) -> tuple[int, int, str]:
+    """Parse '1/3 path.png' into (1, 3, 'path.png')."""
+    parts = payload.split(maxsplit=1)
+    current, total = parse_progress_fraction(parts[0] if parts else "0/1")
+    path = parts[1] if len(parts) > 1 else ""
+    return current, total, path
 
 
 class App(tk.Tk):
@@ -43,7 +173,8 @@ class App(tk.Tk):
         self.geometry("720x560")
         self.minsize(640, 480)
 
-        self.base_python = discover_base_python()
+        # Heavy discovery/warmup happens after the window is visible.
+        self.base_python: Optional[Path] = None
         self.output_path = tk.StringVar(value=str(DEFAULT_OUTPUT))
         self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.status_python = tk.StringVar()
@@ -52,6 +183,9 @@ class App(tk.Tk):
         self.progress_value = tk.DoubleVar(value=0)
         self.progress_text = tk.StringVar(value="")
         self._busy = False
+        self._engine_starting = False
+        self._engine_ready = False
+        self._engine = OcrEngine()
         self._last_result: Optional[Path] = None
         self._last_task_key: Optional[str] = None
         # Drop callback runs inside a Win32 WndProc — never call Tk from there.
@@ -59,8 +193,10 @@ class App(tk.Tk):
 
         self._build()
         self.apply_language()
-        self.refresh_status()
+        self._paint_status_placeholder()
         self._setup_drag_and_drop()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.after(50, self._boot)
         self.after(200, self._poll_drop_queue)
 
     def _build(self) -> None:
@@ -131,7 +267,7 @@ class App(tk.Tk):
 
         progress = ttk.Frame(self.root_frame)
         progress.pack(fill=tk.X, pady=(8, 0))
-        self.progress_label = ttk.Label(progress, textvariable=self.progress_text, width=8)
+        self.progress_label = ttk.Label(progress, textvariable=self.progress_text, width=18)
         self.progress_label.pack(side=tk.RIGHT)
         self.progress_bar = ttk.Progressbar(
             progress,
@@ -204,6 +340,19 @@ class App(tk.Tk):
             pass
         self.after(200, self._poll_drop_queue)
 
+    def _paint_status_placeholder(self) -> None:
+        self.status_python.set("…")
+        self.status_libs.set("…")
+        self.status_models.set("…")
+        self.btn_file.configure(state=tk.DISABLED)
+        self.btn_folder.configure(state=tk.DISABLED)
+        self.progress_text.set(t("gui.progress"))
+
+    def _boot(self) -> None:
+        self.base_python = discover_base_python()
+        self.refresh_status()
+        self._maybe_start_engine()
+
     def refresh_status(self) -> None:
         if self.base_python is None:
             self.status_python.set(t("gui.python_missing"))
@@ -216,7 +365,8 @@ class App(tk.Tk):
             )
             self.status_python.set(t("gui.python_ok", version=version, source=source))
 
-        if libs_ready():
+        libs_ok = libs_installed()
+        if libs_ok:
             self.status_libs.set(t("gui.libs_ready"))
         elif VENV_DIR.exists():
             self.status_libs.set(t("gui.libs_partial"))
@@ -228,14 +378,75 @@ class App(tk.Tk):
         else:
             self.status_models.set(t("gui.models_missing"))
 
-        can_run = libs_ready() and models_ready() and not self._busy
+        can_run = (
+            libs_ok
+            and models_ready()
+            and self._engine_ready
+            and not self._busy
+            and not self._engine_starting
+        )
         state = tk.NORMAL if can_run else tk.DISABLED
         self.btn_file.configure(state=state)
         self.btn_folder.configure(state=state)
         self.btn_install.configure(state=tk.DISABLED if self._busy else tk.NORMAL)
         self.btn_models.configure(
-            state=tk.DISABLED if self._busy or not libs_ready() else tk.NORMAL
+            state=tk.DISABLED if self._busy or not libs_ok else tk.NORMAL
         )
+
+    def _maybe_start_engine(self) -> None:
+        if self._engine_ready or self._engine_starting:
+            return
+        if not libs_installed() or not models_ready():
+            return
+
+        self._engine_starting = True
+        self.refresh_status()
+        self.append_log(t("gui.loading_models"))
+        self._set_progress(0, 3)
+
+        def target() -> None:
+            try:
+                self._engine.start(
+                    on_progress=lambda current, total: self.after(
+                        0,
+                        lambda c=current, n=total: self._on_engine_progress(c, n),
+                    )
+                )
+            except Exception as error:  # noqa: BLE001
+                self.after(0, lambda: self._on_engine_failed(error))
+            else:
+                self.after(0, self._on_engine_ready)
+
+        threading.Thread(target=target, daemon=True).start()
+
+    def _on_engine_progress(self, current: int, total: int) -> None:
+        self._set_progress(current, total)
+        self.progress_text.set(t("gui.progress_file", current=current, total=total))
+
+    def _on_engine_ready(self) -> None:
+        self._engine_starting = False
+        self._engine_ready = True
+        self._set_progress(3, 3)
+        self.append_log(t("gui.engine_ready"))
+        self.refresh_status()
+
+    def _on_engine_failed(self, error: Exception) -> None:
+        self._engine_starting = False
+        self._engine_ready = False
+        self._reset_progress()
+        self.append_log(t("gui.engine_failed", error=error))
+        self.refresh_status()
+        messagebox.showerror("OCR", t("gui.engine_failed", error=error))
+
+    def _restart_engine(self) -> None:
+        self._engine.stop()
+        self._engine_ready = False
+        self._engine_starting = False
+        self._maybe_start_engine()
+
+    def on_close(self) -> None:
+        self._engine.stop()
+        self.destroy()
 
     def on_install(self) -> None:
         self._run_background("gui.task_install", self._install_libraries)
@@ -274,7 +485,10 @@ class App(tk.Tk):
             os.startfile(self._last_result)  # type: ignore[attr-defined]
 
     def process_paths(self, paths: Sequence[Path]) -> None:
-        if self._busy:
+        if self._busy or self._engine_starting:
+            return
+        if not self._engine_ready:
+            messagebox.showinfo("OCR", t("gui.engine_not_ready"))
             return
         try:
             images = collect_images(paths, recursive=False)
@@ -312,16 +526,21 @@ class App(tk.Tk):
     def _on_worker_done(self, title_key: str) -> None:
         self._busy = False
         if title_key == "gui.task_ocr":
-            self._set_progress(self.progress_bar["maximum"], int(self.progress_bar["maximum"]))
+            self._set_progress(
+                self.progress_bar["maximum"], int(self.progress_bar["maximum"])
+            )
         title = t(title_key)
         self.append_log(t("gui.done", title=title))
         self.refresh_status()
         if title_key == "gui.task_install":
             messagebox.showinfo("OCR", t("gui.install_done_body"))
+            self._restart_engine()
+        elif title_key == "gui.task_models":
+            self._restart_engine()
 
     def _on_worker_error(self, title_key: str, error: Exception) -> None:
         self._busy = False
-        if title_key == "gui.task_ocr":
+        if title_key in {"gui.task_ocr", "gui.task_models"}:
             self._reset_progress()
         title = t(title_key)
         self.append_log(t("gui.error", title=title, error=error))
@@ -331,6 +550,7 @@ class App(tk.Tk):
     def _install_libraries(self) -> None:
         if self.base_python is None:
             raise RuntimeError(t("gui.python_required"))
+        invalidate_libs_ready_cache()
         if libs_ready():
             self._log_threadsafe(t("gui.libs_already"))
             return
@@ -367,6 +587,7 @@ class App(tk.Tk):
             self._log_threadsafe,
         )
 
+        invalidate_libs_ready_cache()
         if not libs_ready():
             raise RuntimeError(t("gui.libs_import_failed"))
         self._log_threadsafe(t("gui.libs_ready_log"))
@@ -395,40 +616,27 @@ class App(tk.Tk):
         self._log_threadsafe(t("gui.models_ready_log"))
 
     def _recognize(self, images: Sequence[Path], output: Path) -> None:
-        if not libs_ready():
-            raise RuntimeError(t("gui.need_libs_first"))
-        if not models_ready():
-            raise RuntimeError(t("gui.need_models_first"))
+        if not self._engine_ready:
+            raise RuntimeError(t("gui.engine_not_ready"))
 
         total = len(images)
         self.after(0, lambda: self._set_progress(0, total))
         self._log_threadsafe(t("gui.files_count", count=total))
 
-        blocks: list[str] = []
-        with tempfile.TemporaryDirectory(prefix="doc-photo-ocr-") as temp_dir:
-            temp_root = Path(temp_dir)
-            for index, image in enumerate(images, start=1):
-                temp_out = temp_root / f"part_{index}.txt"
-                command = [
-                    str(VENV_PYTHON),
-                    str(OCR_SCRIPT),
-                    "--ui",
-                    get_ui_lang(),
-                    "-o",
-                    str(temp_out),
-                    str(image),
-                ]
-                run_checked(command, self._log_threadsafe, cwd=APP_DIR)
-                part = temp_out.read_text(encoding="utf-8").strip()
-                if total == 1:
-                    blocks.append(part)
-                else:
-                    blocks.append(f"=== {image.name} ===\n{part}")
-                self.after(0, lambda done=index, max_count=total: self._set_progress(done, max_count))
+        def on_file(current: int, max_count: int, path: str) -> None:
+            self._log_threadsafe(path)
+            self.after(
+                0,
+                lambda c=current, n=max_count: self._set_progress(c, n),
+            )
 
-        text = "\n\n".join(blocks).rstrip() + "\n"
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(text, encoding="utf-8")
+        self._engine.recognize(
+            images,
+            output,
+            ui=get_ui_lang(),
+            on_file=on_file,
+        )
+        self.after(0, lambda: self._set_progress(total, total))
         self._last_result = output
         self.after(0, lambda: self.btn_open.configure(state=tk.NORMAL))
         self._log_threadsafe(t("gui.saved", path=output))
@@ -581,8 +789,23 @@ def is_system_python(executable: Path) -> bool:
         return True
 
 
-def libs_ready() -> bool:
+def libs_installed() -> bool:
+    """Fast check: venv exists and easyocr package files are present (no import)."""
+    if _LIBS_READY_CACHE is True:
+        return True
     if not VENV_PYTHON.exists():
+        return False
+    site = VENV_DIR / "Lib" / "site-packages"
+    return site.is_dir() and any(site.glob("easyocr*"))
+
+
+def libs_ready() -> bool:
+    """Import check used after install. Cached after first success."""
+    global _LIBS_READY_CACHE
+    if _LIBS_READY_CACHE is True:
+        return True
+    if not VENV_PYTHON.exists():
+        _LIBS_READY_CACHE = False
         return False
     try:
         completed = subprocess.run(
@@ -594,8 +817,16 @@ def libs_ready() -> bool:
             **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
+        _LIBS_READY_CACHE = False
         return False
-    return completed.returncode == 0
+    ready = completed.returncode == 0
+    _LIBS_READY_CACHE = ready
+    return ready
+
+
+def invalidate_libs_ready_cache() -> None:
+    global _LIBS_READY_CACHE
+    _LIBS_READY_CACHE = None
 
 
 def models_ready() -> bool:

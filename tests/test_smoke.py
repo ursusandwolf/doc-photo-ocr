@@ -113,6 +113,33 @@ class TextLayoutSmokeTests(unittest.TestCase):
             "Прошу предоставить мне\n15.07.2025 по 28.07.2025",
         )
 
+    def test_skewed_boxes_keep_reading_order(self) -> None:
+        # Real EasyOCR parallelograms after preprocess on zayavlenie_otpusk.png.
+        lines = (
+            ocr.TextLine("отпуск", 1.0, ((715, 436), (812, 423), (816, 457), (719, 471))),
+            ocr.TextLine("оплачиваемый", 1.0, ((516, 475), (716, 438), (720, 466), (521, 504))),
+            ocr.TextLine("дней)", 1.0, ((812, 465), (895, 452), (900, 488), (816, 501))),
+            ocr.TextLine("жкалендарных", 0.68, ((633, 503), (817, 470), (822, 502), (638, 534))),
+            ocr.TextLine("ежегодный", 0.69, ((366, 504), (516, 473), (521, 503), (371, 534))),
+            ocr.TextLine("мне", 1.0, ((312, 513), (367, 504), (370, 531), (315, 539))),
+            ocr.TextLine("включительно", 1.0, ((397, 544), (588, 513), (592, 540), (401, 571))),
+            ocr.TextLine("предоставить", 1.0, ((122, 548), (309, 513), (315, 544), (127, 579))),
+            ocr.TextLine("2025", 1.0, ((324, 553), (399, 542), (404, 577), (329, 588))),
+            ocr.TextLine("Прошу", 1.0, ((31, 558), (128, 550), (129, 588), (33, 596))),
+            ocr.TextLine("(14", 1.0, ((591, 503), (637, 503), (637, 539), (591, 539))),
+            ocr.TextLine("по 28.07", 0.77, ((212, 558), (328, 558), (328, 606), (212, 606))),
+            ocr.TextLine("15.07", 0.70, ((65, 593), (141, 593), (141, 633), (65, 633))),
+        )
+        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines))
+        self.assertEqual(
+            text.splitlines()[0],
+            "Прошу предоставить мне ежегодный оплачиваемый отпуск",
+        )
+        self.assertRegex(
+            text.splitlines()[1],
+            r"15\.07.*по 28\.07.*включительно.*\(14.*дней\)",
+        )
+
 
 class BatchPathSmokeTests(unittest.TestCase):
     def test_collect_images_from_file_and_folder(self) -> None:
