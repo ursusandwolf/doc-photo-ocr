@@ -53,6 +53,22 @@ class PreprocessSmokeTests(unittest.TestCase):
         self.assertEqual(ocr.local_models_present(), any(MODELS_DIR.glob("*.pth")))
 
 
+class GuiHelperSmokeTests(unittest.TestCase):
+    def test_collect_images_from_file_and_folder(self) -> None:
+        import gui
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            photo = folder / "page.png"
+            photo.write_bytes(b"not-needed-for-collect")
+            nested = folder / "skip.txt"
+            nested.write_text("x", encoding="utf-8")
+            images = gui.collect_images([photo, folder])
+            names = [item.name for item in images]
+            self.assertEqual(names.count("page.png"), 1)
+            self.assertTrue(all(item.suffix.lower() == ".png" for item in images))
+
+
 @unittest.skipUnless(
     MODELS_DIR.exists() and any(MODELS_DIR.glob("*.pth")),
     "модели ещё не скачаны: python ocr.py --download-models",

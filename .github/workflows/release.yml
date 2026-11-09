@@ -1,0 +1,78 @@
+name: Release Windows zip
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-zip:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python for runtime bundle
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Copy portable runtime with tkinter
+        shell: pwsh
+        run: |
+          $pyHome = Split-Path -Parent (Get-Command python).Source
+          New-Item -ItemType Directory -Force -Path runtime | Out-Null
+          Copy-Item -Path (Join-Path $pyHome '*') -Destination runtime -Recurse -Force
+          Write-Host "Runtime python:"
+          .\runtime\python.exe -c "import sys, tkinter; print(sys.version)"
+
+      - name: Pack zip
+        shell: pwsh
+        run: |
+          $name = "doc-photo-ocr-windows-x64"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $files = @(
+            "DocOCR.bat",
+            "gui.py",
+            "ocr.py",
+            "preprocess.py",
+            "requirements.txt",
+            "README.md",
+            ".gitignore"
+          )
+          foreach ($file in $files) {
+            Copy-Item $file (Join-Path $stage $file)
+          }
+          Copy-Item -Recurse runtime (Join-Path $stage "runtime")
+          if (Test-Path samples) {
+            Copy-Item -Recurse samples (Join-Path $stage "samples")
+          }
+          $zip = Join-Path $env:GITHUB_WORKSPACE "$name.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
+          Write-Host "Created $zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: doc-photo-ocr-windows-x64.zip
+          generate_release_notes: true
+          body: |
+            ## Windows x64
+
+            1. Распакуйте архив.
+            2. Запустите `DocOCR.bat`.
+            3. Если библиотек ещё нет — «Установить библиотеки» (интернет один раз).
+            4. «Загрузить модели» (интернет один раз).
+            5. Перетащите фото или папку — получите `result.txt`.
+
+            Если в системе уже есть Python 3.9+ с tkinter, используется он.
+            Папка `runtime` — запасной Python из релиза.
+
+            Повторный запуск не переустанавливает уже готовые `.venv` и `models`.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
