@@ -42,6 +42,7 @@ jobs:
             "gui.py",
             "ocr.py",
             "preprocess.py",
+            "spellcheck.py",
             "i18n.py",
             "image_paths.py",
             "requirements.txt",
@@ -52,6 +53,7 @@ jobs:
             Copy-Item $file (Join-Path $stage $file)
           }
           Copy-Item -Recurse runtime (Join-Path $stage "runtime")
+          Copy-Item -Recurse dicts (Join-Path $stage "dicts")
           if (Test-Path samples) {
             Copy-Item -Recurse samples (Join-Path $stage "samples")
           }
