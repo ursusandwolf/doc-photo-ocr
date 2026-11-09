@@ -1,4 +1,4 @@
-"""Генерирует современные тестовые бланки с вымышленными данными."""
+"""Generate modern office fixtures with fictional data."""
 
 from pathlib import Path
 

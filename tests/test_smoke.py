@@ -53,6 +53,18 @@ class PreprocessSmokeTests(unittest.TestCase):
         self.assertEqual(ocr.local_models_present(), any(MODELS_DIR.glob("*.pth")))
 
 
+class UiLangSmokeTests(unittest.TestCase):
+    def test_ui_english_help_and_errors(self) -> None:
+        from i18n import set_ui_lang, t
+
+        set_ui_lang("en")
+        self.assertIn("Recognize text", t("cli.description"))
+        code = ocr.main(["--ui", "en"])
+        self.assertEqual(code, 1)
+        set_ui_lang("ru")
+        self.assertIn("Распознаёт", t("cli.description"))
+
+
 class BatchPathSmokeTests(unittest.TestCase):
     def test_collect_images_from_file_and_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

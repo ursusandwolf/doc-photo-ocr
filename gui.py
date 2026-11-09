@@ -1,9 +1,9 @@
-"""Простой GUI для локального OCR документа A4.
+"""Simple GUI for local A4 document OCR.
 
-1. Находит Python 3.9+ (системный, иначе runtime из zip).
-2. Ставит библиотеки в локальный .venv только если их ещё нет.
-3. Качает модели только если их ещё нет.
-4. Принимает файл/папку и вызывает ocr.py через .venv.
+1. Find Python 3.9+ (system first, otherwise runtime from the zip).
+2. Install libraries into a local .venv only when missing.
+3. Download models only when missing.
+4. Accept a file/folder and call ocr.py through .venv.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable, Optional, Sequence
 
+from i18n import get_ui_lang, set_ui_lang, t
+
 APP_DIR = Path(__file__).resolve().parent
 VENV_DIR = APP_DIR / ".venv"
 VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
@@ -25,6 +27,7 @@ MODELS_DIR = APP_DIR / "models"
 OCR_SCRIPT = APP_DIR / "ocr.py"
 DEFAULT_OUTPUT = APP_DIR / "result.txt"
 RUNTIME_PYTHON = APP_DIR / "runtime" / "python.exe"
+UI_PREF_FILE = APP_DIR / "ui_lang.txt"
 MIN_PYTHON = (3, 9)
 TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
 
@@ -32,96 +35,125 @@ TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("OCR документа A4")
+        set_ui_lang(load_ui_pref())
         self.geometry("720x560")
         self.minsize(640, 480)
 
         self.base_python = discover_base_python()
         self.output_path = tk.StringVar(value=str(DEFAULT_OUTPUT))
+        self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.status_python = tk.StringVar()
         self.status_libs = tk.StringVar()
         self.status_models = tk.StringVar()
         self._busy = False
         self._last_result: Optional[Path] = None
+        self._last_task_key: Optional[str] = None
 
         self._build()
+        self.apply_language()
         self.refresh_status()
         self._setup_drag_and_drop()
 
     def _build(self) -> None:
-        root = ttk.Frame(self, padding=12)
-        root.pack(fill=tk.BOTH, expand=True)
+        self.root_frame = ttk.Frame(self, padding=12)
+        self.root_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(
-            root,
-            text="Локальное распознавание. Данные в сеть не отправляются.",
-        ).pack(anchor=tk.W)
+        top = ttk.Frame(self.root_frame)
+        top.pack(fill=tk.X)
+        self.privacy_label = ttk.Label(top)
+        self.privacy_label.pack(side=tk.LEFT, anchor=tk.W)
+        lang_box = ttk.Frame(top)
+        lang_box.pack(side=tk.RIGHT)
+        self.lang_label = ttk.Label(lang_box)
+        self.lang_label.pack(side=tk.LEFT)
+        self.lang_combo = ttk.Combobox(
+            lang_box,
+            textvariable=self.ui_lang,
+            values=("ru", "en"),
+            width=5,
+            state="readonly",
+        )
+        self.lang_combo.pack(side=tk.LEFT, padx=(6, 0))
+        self.lang_combo.bind("<<ComboboxSelected>>", self.on_language_change)
 
-        status = ttk.LabelFrame(root, text="Состояние", padding=8)
-        status.pack(fill=tk.X, pady=(10, 8))
-        ttk.Label(status, textvariable=self.status_python).pack(anchor=tk.W)
-        ttk.Label(status, textvariable=self.status_libs).pack(anchor=tk.W)
-        ttk.Label(status, textvariable=self.status_models).pack(anchor=tk.W)
+        self.status_frame = ttk.LabelFrame(self.root_frame, padding=8)
+        self.status_frame.pack(fill=tk.X, pady=(10, 8))
+        ttk.Label(self.status_frame, textvariable=self.status_python).pack(anchor=tk.W)
+        ttk.Label(self.status_frame, textvariable=self.status_libs).pack(anchor=tk.W)
+        ttk.Label(self.status_frame, textvariable=self.status_models).pack(anchor=tk.W)
 
-        actions = ttk.Frame(root)
+        actions = ttk.Frame(self.root_frame)
         actions.pack(fill=tk.X, pady=4)
-        self.btn_install = ttk.Button(
-            actions, text="Установить библиотеки", command=self.on_install
-        )
+        self.btn_install = ttk.Button(actions, command=self.on_install)
         self.btn_install.pack(side=tk.LEFT)
-        self.btn_models = ttk.Button(
-            actions, text="Загрузить модели", command=self.on_download_models
-        )
+        self.btn_models = ttk.Button(actions, command=self.on_download_models)
         self.btn_models.pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Обновить статус", command=self.refresh_status).pack(
-            side=tk.LEFT, padx=(8, 0)
-        )
+        self.btn_refresh = ttk.Button(actions, command=self.refresh_status)
+        self.btn_refresh.pack(side=tk.LEFT, padx=(8, 0))
 
-        drop = ttk.LabelFrame(root, text="Документ", padding=8)
-        drop.pack(fill=tk.X, pady=8)
+        self.drop_frame = ttk.LabelFrame(self.root_frame, padding=8)
+        self.drop_frame.pack(fill=tk.X, pady=8)
         self.drop_label = ttk.Label(
-            drop,
-            text="Перетащите сюда фото или папку\nили выберите кнопкой ниже",
+            self.drop_frame,
             anchor=tk.CENTER,
             justify=tk.CENTER,
             padding=18,
         )
         self.drop_label.pack(fill=tk.X)
 
-        buttons = ttk.Frame(drop)
+        buttons = ttk.Frame(self.drop_frame)
         buttons.pack(fill=tk.X, pady=(8, 0))
-        self.btn_file = ttk.Button(buttons, text="Выбрать файл…", command=self.on_pick_file)
+        self.btn_file = ttk.Button(buttons, command=self.on_pick_file)
         self.btn_file.pack(side=tk.LEFT)
-        self.btn_folder = ttk.Button(
-            buttons, text="Выбрать папку…", command=self.on_pick_folder
-        )
+        self.btn_folder = ttk.Button(buttons, command=self.on_pick_folder)
         self.btn_folder.pack(side=tk.LEFT, padx=(8, 0))
 
-        out = ttk.Frame(root)
+        out = ttk.Frame(self.root_frame)
         out.pack(fill=tk.X, pady=4)
-        ttk.Label(out, text="Результат:").pack(side=tk.LEFT)
+        self.result_label = ttk.Label(out)
+        self.result_label.pack(side=tk.LEFT)
         ttk.Entry(out, textvariable=self.output_path).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=6
         )
-        ttk.Button(out, text="…", width=3, command=self.on_pick_output).pack(side=tk.LEFT)
-        self.btn_open = ttk.Button(
-            out, text="Открыть", command=self.on_open_result, state=tk.DISABLED
-        )
+        self.btn_browse_out = ttk.Button(out, text="…", width=3, command=self.on_pick_output)
+        self.btn_browse_out.pack(side=tk.LEFT)
+        self.btn_open = ttk.Button(out, command=self.on_open_result, state=tk.DISABLED)
         self.btn_open.pack(side=tk.LEFT, padx=(8, 0))
 
-        log_frame = ttk.LabelFrame(root, text="Журнал", padding=4)
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        self.log = scrolledtext.ScrolledText(log_frame, height=12, wrap=tk.WORD)
+        self.log_frame = ttk.LabelFrame(self.root_frame, padding=4)
+        self.log_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        self.log = scrolledtext.ScrolledText(self.log_frame, height=12, wrap=tk.WORD)
         self.log.pack(fill=tk.BOTH, expand=True)
         self.log.configure(state=tk.DISABLED)
+
+    def apply_language(self) -> None:
+        self.title(t("gui.title"))
+        self.privacy_label.configure(text=t("gui.privacy"))
+        self.lang_label.configure(text=t("gui.ui_lang"))
+        self.status_frame.configure(text=t("gui.status"))
+        self.btn_install.configure(text=t("gui.install"))
+        self.btn_models.configure(text=t("gui.models"))
+        self.btn_refresh.configure(text=t("gui.refresh"))
+        self.drop_frame.configure(text=t("gui.document"))
+        self.drop_label.configure(text=t("gui.drop_hint"))
+        self.btn_file.configure(text=t("gui.pick_file"))
+        self.btn_folder.configure(text=t("gui.pick_folder"))
+        self.result_label.configure(text=t("gui.result"))
+        self.btn_open.configure(text=t("gui.open"))
+        self.log_frame.configure(text=t("gui.log"))
+        self.refresh_status()
+
+    def on_language_change(self, _event: object = None) -> None:
+        lang = set_ui_lang(self.ui_lang.get())
+        self.ui_lang.set(lang)
+        save_ui_pref(lang)
+        self.apply_language()
 
     def _setup_drag_and_drop(self) -> None:
         try:
             import windnd
         except ImportError:
-            self.append_log(
-                "Drag-and-drop появится после «Установить библиотеки» (пакет windnd)."
-            )
+            self.append_log(t("gui.dnd_after_install"))
             return
 
         def on_drop(files: list[bytes]) -> None:
@@ -129,27 +161,31 @@ class App(tk.Tk):
             self.after(0, lambda: self.process_paths(paths))
 
         windnd.hook_dropfiles(self, func=on_drop)
-        self.append_log("Drag-and-drop включён: перетащите файл или папку в окно.")
+        self.append_log(t("gui.dnd_ready"))
 
     def refresh_status(self) -> None:
         if self.base_python is None:
-            self.status_python.set("Python: не найден (нужен 3.9+ с tkinter или папка runtime)")
+            self.status_python.set(t("gui.python_missing"))
         else:
             version = python_version_string(self.base_python)
-            source = "системный" if is_system_python(self.base_python) else "runtime из zip"
-            self.status_python.set(f"Python: {version} ({source})")
+            source = (
+                t("gui.source_system")
+                if is_system_python(self.base_python)
+                else t("gui.source_runtime")
+            )
+            self.status_python.set(t("gui.python_ok", version=version, source=source))
 
         if libs_ready():
-            self.status_libs.set("Библиотеки: готовы (.venv)")
+            self.status_libs.set(t("gui.libs_ready"))
         elif VENV_DIR.exists():
-            self.status_libs.set("Библиотеки: .venv есть, но EasyOCR ещё не установлен")
+            self.status_libs.set(t("gui.libs_partial"))
         else:
-            self.status_libs.set("Библиотеки: не установлены")
+            self.status_libs.set(t("gui.libs_missing"))
 
         if models_ready():
-            self.status_models.set("Модели: готовы (models)")
+            self.status_models.set(t("gui.models_ready"))
         else:
-            self.status_models.set("Модели: не загружены")
+            self.status_models.set(t("gui.models_missing"))
 
         can_run = libs_ready() and models_ready() and not self._busy
         state = tk.NORMAL if can_run else tk.DISABLED
@@ -161,33 +197,33 @@ class App(tk.Tk):
         )
 
     def on_install(self) -> None:
-        self._run_background("Установка библиотек", self._install_libraries)
+        self._run_background("gui.task_install", self._install_libraries)
 
     def on_download_models(self) -> None:
-        self._run_background("Загрузка моделей", self._download_models)
+        self._run_background("gui.task_models", self._download_models)
 
     def on_pick_file(self) -> None:
         path = filedialog.askopenfilename(
-            title="Выберите фото документа",
+            title=t("gui.pick_file_title"),
             filetypes=[
-                ("Изображения", "*.jpg *.jpeg *.png *.webp *.bmp"),
-                ("Все файлы", "*.*"),
+                (t("gui.filetype_images"), "*.jpg *.jpeg *.png *.webp *.bmp"),
+                (t("gui.filetype_all"), "*.*"),
             ],
         )
         if path:
             self.process_paths([Path(path)])
 
     def on_pick_folder(self) -> None:
-        path = filedialog.askdirectory(title="Выберите папку с фото")
+        path = filedialog.askdirectory(title=t("gui.pick_folder_title"))
         if path:
             self.process_paths([Path(path)])
 
     def on_pick_output(self) -> None:
         path = filedialog.asksaveasfilename(
-            title="Куда сохранить текст",
+            title=t("gui.pick_output_title"),
             defaultextension=".txt",
             initialfile="result.txt",
-            filetypes=[("Текст", "*.txt")],
+            filetypes=[(t("gui.filetype_text"), "*.txt")],
         )
         if path:
             self.output_path.set(path)
@@ -207,18 +243,17 @@ class App(tk.Tk):
             messagebox.showwarning("OCR", str(error))
             return
         if not images:
-            messagebox.showwarning(
-                "OCR",
-                "Не найдено изображений .jpg/.jpeg/.png/.webp/.bmp",
-            )
+            messagebox.showwarning("OCR", t("gui.no_images"))
             return
         output = Path(self.output_path.get().strip() or DEFAULT_OUTPUT)
-        self._run_background("Распознавание", lambda: self._recognize(images, output))
+        self._run_background("gui.task_ocr", lambda: self._recognize(images, output))
 
-    def _run_background(self, title: str, worker: Callable[[], None]) -> None:
+    def _run_background(self, title_key: str, worker: Callable[[], None]) -> None:
         if self._busy:
             return
         self._busy = True
+        self._last_task_key = title_key
+        title = t(title_key)
         self.refresh_status()
         self.append_log(f"--- {title} ---")
 
@@ -226,52 +261,46 @@ class App(tk.Tk):
             try:
                 worker()
             except Exception as error:  # noqa: BLE001
-                self.after(0, lambda: self._on_worker_error(title, error))
+                self.after(0, lambda: self._on_worker_error(title_key, error))
             else:
-                self.after(0, lambda: self._on_worker_done(title))
+                self.after(0, lambda: self._on_worker_done(title_key))
 
         threading.Thread(target=target, daemon=True).start()
 
-    def _on_worker_done(self, title: str) -> None:
+    def _on_worker_done(self, title_key: str) -> None:
         self._busy = False
-        self.append_log(f"Готово: {title}")
+        title = t(title_key)
+        self.append_log(t("gui.done", title=title))
         self.refresh_status()
-        if title == "Установка библиотек":
-            messagebox.showinfo(
-                "OCR",
-                "Библиотеки установлены.\n"
-                "Перезапустите программу, чтобы включить drag-and-drop,\n"
-                "затем нажмите «Загрузить модели».",
-            )
+        if title_key == "gui.task_install":
+            messagebox.showinfo("OCR", t("gui.install_done_body"))
 
-    def _on_worker_error(self, title: str, error: Exception) -> None:
+    def _on_worker_error(self, title_key: str, error: Exception) -> None:
         self._busy = False
-        self.append_log(f"Ошибка ({title}): {error}")
+        title = t(title_key)
+        self.append_log(t("gui.error", title=title, error=error))
         self.refresh_status()
         messagebox.showerror("OCR", f"{title}\n\n{error}")
 
     def _install_libraries(self) -> None:
         if self.base_python is None:
-            raise RuntimeError(
-                "Не найден Python 3.9+ с tkinter. "
-                "Установите Python с python.org или используйте релиз с папкой runtime."
-            )
+            raise RuntimeError(t("gui.python_required"))
         if libs_ready():
-            self._log_threadsafe("Библиотеки уже установлены — повторный pip не нужен.")
+            self._log_threadsafe(t("gui.libs_already"))
             return
 
         if not VENV_DIR.exists():
-            self._log_threadsafe(f"Создаю .venv через {self.base_python}")
+            self._log_threadsafe(t("gui.creating_venv", python=self.base_python))
             run_checked(
                 [str(self.base_python), "-m", "venv", str(VENV_DIR)],
                 self._log_threadsafe,
             )
 
         py = str(VENV_PYTHON)
-        self._log_threadsafe("Обновляю pip…")
+        self._log_threadsafe(t("gui.upgrade_pip"))
         run_checked([py, "-m", "pip", "install", "--upgrade", "pip"], self._log_threadsafe)
 
-        self._log_threadsafe("Ставлю PyTorch (CPU)…")
+        self._log_threadsafe(t("gui.install_torch"))
         run_checked(
             [
                 py,
@@ -286,51 +315,59 @@ class App(tk.Tk):
             self._log_threadsafe,
         )
 
-        self._log_threadsafe("Ставлю зависимости из requirements.txt…")
+        self._log_threadsafe(t("gui.install_reqs"))
         run_checked(
             [py, "-m", "pip", "install", "-r", str(REQUIREMENTS)],
             self._log_threadsafe,
         )
 
         if not libs_ready():
-            raise RuntimeError("Установка завершилась, но import easyocr не удался.")
-        self._log_threadsafe("Библиотеки готовы.")
+            raise RuntimeError(t("gui.libs_import_failed"))
+        self._log_threadsafe(t("gui.libs_ready_log"))
 
     def _download_models(self) -> None:
         if not libs_ready():
-            raise RuntimeError("Сначала установите библиотеки.")
+            raise RuntimeError(t("gui.need_libs_first"))
         if models_ready():
-            self._log_threadsafe("Модели уже есть — загрузка не нужна.")
+            self._log_threadsafe(t("gui.models_already"))
             return
 
-        self._log_threadsafe("Скачиваю модели EasyOCR (нужен интернет)…")
+        self._log_threadsafe(t("gui.models_downloading"))
         run_checked(
-            [str(VENV_PYTHON), str(OCR_SCRIPT), "--download-models"],
+            [
+                str(VENV_PYTHON),
+                str(OCR_SCRIPT),
+                "--ui",
+                get_ui_lang(),
+                "--download-models",
+            ],
             self._log_threadsafe,
             cwd=APP_DIR,
         )
         if not models_ready():
-            raise RuntimeError("Модели не появились в папке models.")
-        self._log_threadsafe("Модели готовы. Дальше программа работает офлайн.")
+            raise RuntimeError(t("gui.models_missing_after"))
+        self._log_threadsafe(t("gui.models_ready_log"))
 
     def _recognize(self, images: Sequence[Path], output: Path) -> None:
         if not libs_ready():
-            raise RuntimeError("Сначала установите библиотеки.")
+            raise RuntimeError(t("gui.need_libs_first"))
         if not models_ready():
-            raise RuntimeError("Сначала загрузите модели.")
+            raise RuntimeError(t("gui.need_models_first"))
 
         command = [
             str(VENV_PYTHON),
             str(OCR_SCRIPT),
+            "--ui",
+            get_ui_lang(),
             "-o",
             str(output),
             *[str(path) for path in images],
         ]
-        self._log_threadsafe("Файлов: " + str(len(images)))
+        self._log_threadsafe(t("gui.files_count", count=len(images)))
         run_checked(command, self._log_threadsafe, cwd=APP_DIR)
         self._last_result = output
         self.after(0, lambda: self.btn_open.configure(state=tk.NORMAL))
-        self._log_threadsafe(f"Текст сохранён: {output}")
+        self._log_threadsafe(t("gui.saved", path=output))
 
     def _log_threadsafe(self, message: str) -> None:
         self.after(0, lambda: self.append_log(message))
@@ -340,6 +377,22 @@ class App(tk.Tk):
         self.log.insert(tk.END, message.rstrip() + "\n")
         self.log.see(tk.END)
         self.log.configure(state=tk.DISABLED)
+
+
+def load_ui_pref() -> str:
+    try:
+        if UI_PREF_FILE.exists():
+            return set_ui_lang(UI_PREF_FILE.read_text(encoding="utf-8").strip())
+    except OSError:
+        pass
+    return set_ui_lang("ru")
+
+
+def save_ui_pref(lang: str) -> None:
+    try:
+        UI_PREF_FILE.write_text(lang + "\n", encoding="utf-8")
+    except OSError:
+        return
 
 
 def discover_base_python() -> Optional[Path]:
@@ -475,7 +528,7 @@ def run_checked(
         log(line.rstrip())
     code = process.wait()
     if code != 0:
-        raise RuntimeError(f"Команда завершилась с кодом {code}")
+        raise RuntimeError(f"exit code {code}")
 
 
 def main() -> int:

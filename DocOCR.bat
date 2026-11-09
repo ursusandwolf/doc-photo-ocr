@@ -30,16 +30,16 @@ if exist "%~dp0runtime\python.exe" (
   goto :after_run
 )
 
-echo Не найден Python 3.9+ с tkinter.
-echo Установите Python с https://www.python.org/downloads/
-echo ^(галочка tcl/tk^) или используйте релиз с папкой runtime.
+echo Python 3.9+ with tkinter was not found.
+echo Install Python from https://www.python.org/downloads/
+echo ^(enable tcl/tk^) or use a release that includes the runtime folder.
 pause
 exit /b 1
 
 :after_run
 if errorlevel 1 (
   echo.
-  echo Программа завершилась с ошибкой.
+  echo The program exited with an error.
   pause
 )
 endlocal

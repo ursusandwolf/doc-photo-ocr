@@ -1,216 +1,90 @@
-<h1 align="center">OCR документа A4</h1>
+<h1 align="center">A4 Document OCR</h1>
 
 <p align="center">
-  Локальная программа: фотография документа на входе, текст на русском и английском на выходе.
+  Local app: document photo in, Russian/English text out.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.9%2B-3776AB" alt="Python 3.9+">
-  <img src="https://img.shields.io/badge/режим-офлайн-2ea44f" alt="Офлайн">
-  <img src="https://img.shields.io/badge/устройство-CPU-6e7681" alt="CPU">
+  <img src="https://img.shields.io/badge/mode-offline-2ea44f" alt="Offline">
+  <img src="https://img.shields.io/badge/device-CPU-6e7681" alt="CPU">
 </p>
 
 <p align="center">
   <code>DocOCR.bat</code> · <code>python ocr.py document.jpg</code>
 </p>
 
-> Программа не отправляет никакие данные в сеть и работает полностью локально.
+> The program does not send any data to the network and runs fully locally.
 
-Текст сохраняется в `result.txt` (UTF-8). Видеокарта не нужна.
+Text is saved to `result.txt` (UTF-8). No GPU required.
 
-## Для пользователя (Windows)
+UI language defaults to **Russian**. Switch to English in the GUI combo box, or with CLI `--ui en`. Code comments and this README are in English.
 
-1. Скачайте zip из [Releases](https://github.com/ursusandwolf/doc-photo-ocr/releases) и распакуйте.
-2. Запустите `DocOCR.bat`.
-3. Если библиотек ещё нет — **«Установить библиотеки»** (интернет один раз).
-4. Если моделей ещё нет — **«Загрузить модели»** (интернет один раз).
-5. Перетащите фото или папку в окно (или выберите кнопкой) — получите `result.txt`.
+## For end users (Windows)
 
-Если в системе уже есть Python 3.9+ с tkinter, программа использует его и **не переустанавливает Python**.  
-Повторный запуск **не** гоняет `pip` и **не** качает модели, если `.venv` и `models` уже готовы.  
-Папка `runtime` в релизе — запасной Python на случай, если системного нет.
+1. Download the zip from [Releases](https://github.com/ursusandwolf/doc-photo-ocr/releases) and unpack it.
+2. Run `DocOCR.bat`.
+3. If libraries are missing — **Install libraries** (internet once).
+4. If models are missing — **Download models** (internet once).
+5. Drop a photo or folder (or use the buttons) — get `result.txt`.
 
-## Содержание
+If the machine already has Python 3.9+ with tkinter, the app uses it and does **not** reinstall Python.  
+A second launch does **not** re-run `pip` or re-download models when `.venv` and `models` are ready.  
+The `runtime` folder in the release is a fallback Python when no system Python exists.
 
-- [Для пользователя (Windows)](#для-пользователя-windows)
-- [Что умеет](#что-умеет)
-- [Дизайн](#дизайн)
-- [Установка](#установка)
-- [Модели](#модели)
-- [Запуск](#запуск)
-- [Пример результата](#пример-результата)
-- [Частые проблемы](#частые-проблемы)
-- [Офлайн](#офлайн)
-- [Состав](#состав)
+## Features
 
-## Что умеет
+- GUI: one-click setup, drag-and-drop, RU/EN UI.
+- CLI batch mode: files, folders, `--per-file`, `--recursive`.
+- Formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` (Cyrillic paths OK).
+- OCR languages: Russian + English (`--lang`).
+- Light preprocessing (no hard binarization).
+- Missing models → clear error, no silent network calls.
 
-- GUI: установка одной кнопкой, drag-and-drop файла или папки, сохранение `result.txt`.
-- CLI с пакетным режимом: файлы, папки, `--per-file`, `--recursive`.
-- Читает `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, в том числе путь с кириллицей.
-- Распознаёт русский и английский текст.
-- Несколько фото за один запуск пишет в один файл.
-- Перед распознаванием слегка готовит фото. Жёсткую бинаризацию не делает.
-- Если моделей нет, завершается с понятной ошибкой и сама ничего не скачивает.
+## Design
 
-## Дизайн
-
-Ядро — [`ocr.py`](ocr.py) и [`preprocess.py`](preprocess.py). Окно [`gui.py`](gui.py) только ставит окружение и вызывает тот же OCR через локальный `.venv`.
-
-Классов поведения нет. Есть три типа данных и функции, собранные по обязанности. Диаграмма ниже показывает именно это, а не отдельную иерархию, которой в коде нет.
-
-### Типы данных и обязанности
+Core: [`ocr.py`](ocr.py) + [`preprocess.py`](preprocess.py). Window: [`gui.py`](gui.py). UI strings: [`i18n.py`](i18n.py) (ru default / en).
 
 ```mermaid
 classDiagram
     direction LR
-
     class OcrError {
         <<exception>>
-        +message
     }
-
     class TextLine {
         <<NamedTuple>>
         +text
         +confidence
         +box
     }
-
     class RecognizedDocument {
         <<NamedTuple>>
         +path
         +lines
     }
-
     class CommandLine {
         <<functions>>
         +main()
-        +parse_args()
-        +parse_languages()
         +run()
     }
-
-    class ImageIO {
-        <<functions>>
-        +ensure_supported_image()
-        +load_image()
-        +load_image_with_pillow()
-    }
-
     class Preprocess {
         <<preprocess.py>>
         +preprocess()
-        +straighten_document()
-        +increase_contrast()
-        +deskew()
     }
-
     class OfflineOcr {
         <<functions>>
-        +download_models()
         +create_reader()
         +read_lines()
     }
-
-    class Report {
-        <<functions>>
-        +render_documents()
-        +render_debug()
-        +save_text()
-        +print_result()
-    }
-
-    RecognizedDocument "1" --> "*" TextLine : lines
-    CommandLine --> ImageIO : чтение файла
-    CommandLine --> Preprocess : подготовка фото
-    CommandLine --> OfflineOcr : распознавание
-    CommandLine --> Report : вывод
-    OfflineOcr --> RecognizedDocument : собирает
-    Report --> RecognizedDocument : сохраняет
-    CommandLine ..> OcrError : ошибка команды
-    ImageIO ..> OcrError : файл или формат
-    OfflineOcr ..> OcrError : нет моделей
+    RecognizedDocument "1" --> "*" TextLine
+    CommandLine --> Preprocess
+    CommandLine --> OfflineOcr
+    OfflineOcr --> RecognizedDocument
 ```
 
-| Группа | Где смотреть | Что делает |
-| --- | --- | --- |
-| `CommandLine` | `main`, `parse_args`, `run` | Разбирает команду и выбирает ветку: загрузка моделей или распознавание. |
-| `ImageIO` | `ensure_supported_image`, `load_image` | Проверяет путь и формат. Читает байты через `numpy`, чтобы Windows не теряла кириллицу в пути. |
-| `Preprocess` | [`preprocess.py`](preprocess.py) | Геометрия, затем шум и контраст, затем небольшой наклон. |
-| `OfflineOcr` | `create_reader`, `read_lines` | EasyOCR на CPU. Сеть разрешена только в `download_models`. |
-| `Report` | `render_documents`, `save_text` | Печатает текст и пишет UTF-8. В режиме `--debug` пишет второй файл. |
-| `TextLine` | кортеж | Одна распознанная строка: текст, уверенность, четыре угла. |
-| `RecognizedDocument` | кортеж | Файл и его строки в порядке чтения. |
-| `OcrError` | исключение | Ошибка, которую можно показать человеку. Код выхода при ней равен 1. |
+## Installation (developers)
 
-`box` у `TextLine` — четыре точки `(x, y)` в пикселях кадра, который ушёл в OCR.
-
-### Поток одного запуска
-
-```mermaid
-flowchart TD
-    startNode[Запуск ocr.py] --> mode{Какая команда}
-    mode -->|download-models| fetch[Скачать модели в папку models]
-    mode -->|пути к фото| check[Проверить путь и формат]
-    check --> reader[EasyOCR на CPU без загрузки]
-    reader --> models{Модели есть}
-    models -->|нет| stopNode[Понятная ошибка без сети]
-    models -->|да| prep{Готовить фото}
-    prep -->|обычный запуск| opencv[Перспектива контраст наклон]
-    prep -->|no-preprocess| raw[Исходный кадр]
-    opencv --> read[Строки сверху вниз]
-    raw --> read
-    read --> save[Консоль и result.txt]
-```
-
-Порядок внутри `preprocess` фиксирован:
-
-1. Перспектива, только если найден отдельный четырёхугольник листа.
-2. Серый цвет, слабое удаление шума, локальный контраст.
-3. Поворот к горизонтали, только если наклон уверенный и небольшой.
-
-Правила, по которым шаг можно пропустить:
-
-| Проверка | Порог | Если не сошлось |
-| --- | --- | --- |
-| Доля площади контура | от 30% до 95% кадра | перспектива не применяется |
-| Углы на границе кадра | все 4 угла ближе 2% к краю | это сам кадр, его не тянут |
-| Узкий контур | короткая сторона меньше 20% длинной | контур отбрасывается |
-| Наклон текста | от 0.4° до 15° | поворот не применяется |
-
-Скан, который уже занимает весь кадр, остаётся как есть. Лист, снятый на столе и заметно отделённый от края фото, выравнивается.
-
-### Где включается сеть
-
-```mermaid
-sequenceDiagram
-    actor User as Пользователь
-    participant Cli as ocr.py
-    participant Ocr as EasyOCR
-    participant Disk as Диск
-
-    User->>Cli: python ocr.py photo.jpg
-    Cli->>Cli: проверка файла
-    Cli->>Ocr: Reader download_enabled false
-    alt моделей нет
-        Ocr-->>Cli: файл модели не найден
-        Cli-->>User: ошибка и подсказка
-    else модели есть
-        Cli->>Ocr: readtext
-        Ocr-->>Cli: строки
-        Cli->>Disk: result.txt
-        Cli-->>User: текст в консоли
-    end
-```
-
-Ветка `python ocr.py --download-models` — единственная, где `download_enabled` равен true. Она не принимает пути к фото.
-
-## Установка
-
-Нужен Python 3.9 или новее.
-
-Windows:
+Python 3.9+.
 
 ```bat
 python -m venv .venv
@@ -219,29 +93,15 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 ```
 
-Первая команда `pip` ставит PyTorch без CUDA, чтобы не скачивать сборку для видеокарты. Интернет нужен на время установки пакетов и на одно скачивание моделей. Эти адреса относятся к установке, программа их не вызывает.
-
-Зависимости перечислены в [`requirements.txt`](requirements.txt): EasyOCR, OpenCV, Pillow, NumPy. Torch ставится как зависимость EasyOCR.
-
-## Модели
-
-Файлы моделей лежат в папке `models` рядом с `ocr.py`. Пока их нет, обычный запуск не выходит в интернет.
-
-Один раз, когда интернет есть:
+## Models
 
 ```bat
 python ocr.py --download-models
 ```
 
-EasyOCR сохранит модели в `models`. После этого распознавание работает без сети. Повторять загрузку не нужно, пока не меняется набор языков. Для другого языка:
+Weights go to `models/`. After that, recognition is offline.
 
-```bat
-python ocr.py --download-models --lang ru
-```
-
-Папка `models` в git не входит: файлы большие, их получает команда загрузки.
-
-## Запуск
+## CLI
 
 ```bat
 python ocr.py path\to\document.jpg
@@ -251,104 +111,59 @@ python ocr.py page1.jpg page2.png
 python ocr.py resources\
 python ocr.py resources\ --per-file
 python ocr.py scans\ --recursive -o batch.txt
+python ocr.py --ui en document.jpg
 python ocr.py document.jpg --debug
 python ocr.py document.jpg --no-preprocess
 ```
 
-| Аргумент | Назначение |
+| Argument | Meaning |
 | --- | --- |
-| пути | Файлы и/или папки. В папке берутся изображения первого уровня. |
-| `--recursive` | Искать фото и во вложенных папках. |
-| `--per-file` | Пакетно: рядом с каждым фото писать `имя.txt` вместо одного общего файла. |
-| `--lang ru+en` | Языки через `+` или запятую. По умолчанию `ru+en`. |
-| `-o result.txt` | Общий файл результата (не используется с `--per-file`). |
-| `--debug` | Дополнительно координаты и уверенность. |
-| `--no-preprocess` | Без выравнивания и контраста. |
-| `--download-models` | Один раз скачать модели. Без путей к фото. |
+| paths | Files and/or folders |
+| `--recursive` | Also scan nested folders |
+| `--per-file` | Write `name.txt` next to each image |
+| `--ui ru\|en` | UI language (default `ru`) |
+| `--lang ru+en` | OCR languages |
+| `-o result.txt` | Shared output (ignored with `--per-file`) |
+| `--debug` | Coordinates + confidence |
+| `--no-preprocess` | Skip geometry/contrast |
+| `--download-models` | One-time model download |
 
-Несколько фото сохраняются в один файл. Перед текстом каждого стоит его имя:
+## Sample fixtures
 
-```text
-=== page1.jpg ===
-Текст первой страницы
+Modern office samples with fictional data live in [`resources/`](resources/): application, employment certificate, delivery note. See [`resources/SOURCES.md`](resources/SOURCES.md).
 
-=== page2.png ===
-Текст второй страницы
-```
+## Common issues
 
-Один файл записывается без такого заголовка.
+- Blur, glare, and deep shadows hurt accuracy. Shoot the full page under even light.
+- Short side preferably ≥ 1000 px.
+- Severely cropped pages will not be reconstructed; only mild perspective/skew is fixed.
+- If preprocess hurts quality, retry with `--no-preprocess`.
+- Printed text is the target; handwriting is not.
 
-## Пример результата
+## Offline
 
-```text
-Распознанный текст:
-Договор № 123 от 15.03.2025
-...
-Текст сохранён в result.txt
-```
+The program does not send any data to the network and runs fully locally.
 
-Если текста на фото нет, в файле будет строка `Текст не распознан.`
+Network is used only for `pip` / `--download-models` / the GUI install buttons. Recognition uses `download_enabled=False`.
 
-`--debug` для того же запуска даёт `result.debug.txt`:
-
-```text
-Файл: document.jpg
-1. [0.98] Договор № 123 от 15.03.2025
-    координаты: (120, 80), (640, 82), (638, 110), (118, 108)
-```
-
-Существующий файл результата заменяется.
-
-## Частые проблемы
-
-- Размытый кадр, блик и глубокая тень портят буквы. Снимайте лист целиком, при ровном свете, без вспышки в упор.
-- Короткой стороне лучше быть не меньше 1000 пикселей. Мелкий текст на общем плане листа читается плохо.
-- Сильно обрезанный или смятый лист программа не восстановит. Она поправляет только заметный контур листа и наклон до 15°.
-- Если после подготовки текст стал хуже или обрезались поля, повторите запуск с `--no-preprocess`.
-- Уверенно читается печатный текст. Рукопись не является целью программы.
-- Путь с русскими буквами допустим. Если файл не открывается, проверьте расширение: допустимы `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`. Пустой и повреждённый файл дают отдельную ошибку.
-
-Код выхода `0` — текст записан. Код `1` — ошибка в консоли, `result.txt` при этом не создаётся.
-
-## Офлайн
-
-Программа не отправляет никакие данные в сеть и работает полностью локально.
-
-Во время распознавания нет обращений к облачным OCR, телеметрии, проверки обновлений и скрытой загрузки моделей. Изображение и распознанный текст остаются на этом компьютере.
-
-Сеть используется только если вы сами запустили:
-
-```bat
-python ocr.py --download-models
-```
-
-При первом таком запуске EasyOCR скачивает модели. После этого интернет для работы программы не нужен. Если моделей нет, обычный запуск показывает ошибку и не пытается подключиться.
-
-В коде `ocr.py` нет адресов сервисов, ключей и облачных OCR.
-
-## Проверка
-
-Минимальный smoke без установки pytest:
+## Tests
 
 ```bat
 python -m unittest tests.test_smoke -v
 ```
 
-Тест полного OCR пропускается, пока нет файлов в `models`. После `python ocr.py --download-models` он тоже выполняется.
-
-## Состав
+## Layout
 
 ```text
-DocOCR.bat          запуск GUI на Windows
-gui.py              окно: установка, модели, drag-and-drop
-ocr.py              CLI и движок распознавания
-preprocess.py       подготовка фото (без сети и OCR)
-requirements.txt    зависимости
-README.md           эта инструкция
-.github/workflows/  сборка zip-релиза
-samples/            пример изображения для smoke
-tests/              минимальные smoke-тесты
-models/             появляется после загрузки моделей
-.venv/              появляется после «Установить библиотеки»
-runtime/            только в GitHub Release (запасной Python)
+DocOCR.bat          Windows GUI launcher
+gui.py              setup + drag-and-drop UI
+ocr.py              CLI + OCR engine
+preprocess.py       image prep
+i18n.py             RU/EN user-facing strings
+requirements.txt
+resources/          modern office fixtures
+tests/
+models/             after --download-models
+.venv/              after Install libraries
+runtime/            release zip only
 ```

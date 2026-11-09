@@ -1,21 +1,21 @@
-"""Локальное распознавание текста с фотографии документа A4.
+"""Local OCR for A4 document photos.
 
-Путь одного запуска:
+Run path:
 
-1. Разобрать аргументы командной строки.
-2. Либо один раз скачать модели (--download-models), либо распознать фото.
-3. Проверить, что файл существует и формат поддерживается.
-4. Прочитать изображение (в том числе путь с кириллицей).
-5. Подготовить фото, если не передан --no-preprocess.
-6. Распознать текст локальной моделью EasyOCR на CPU.
-7. Напечатать текст и записать в result.txt (или по файлу в --per-file).
+1. Parse CLI arguments.
+2. Either download models once (--download-models) or recognize photos.
+3. Check that each path exists and the format is supported.
+4. Load the image (including Cyrillic paths on Windows).
+5. Preprocess unless --no-preprocess is set.
+6. Run EasyOCR on CPU with local weights.
+7. Print text and write result.txt (or one .txt per file with --per-file).
 
-Входы: файлы и/или папки. Папка собирает изображения первого уровня;
-с --recursive — и из вложенных каталогов.
+Inputs may be files and/or folders. A folder takes first-level images;
+--recursive also walks nested directories.
 
-Распознавание всегда создаёт Reader с download_enabled=False.
-Скачивание возможно только в ветке --download-models.
-Подготовка кадра вынесена в preprocess.py — там нет сети и OCR.
+Recognition always builds Reader with download_enabled=False.
+Network download is allowed only in the --download-models branch.
+Image prep lives in preprocess.py — no network and no OCR there.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ import cv2
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
+from i18n import get_ui_lang, set_ui_lang, t
 from preprocess import find_document_corners, preprocess
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -39,13 +40,13 @@ DEFAULT_OUTPUT = Path("result.txt")
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 LINE_GROUP_PIXELS = 15
 
-# EasyOCR кладёт в models detection и recognition. Без .pth файлов
-# офлайн-распознавание даже не начинаем — так ошибка яснее, чем у библиотеки.
+# EasyOCR stores detection/recognition weights under models/.
+# Without .pth files we fail early with a clear offline error.
 MODEL_FILE_GLOB = "*.pth"
 
 
 class OcrError(Exception):
-    """Ошибка, которую можно показать пользователю без трассировки."""
+    """User-visible failure without a traceback dump."""
 
 
 class TextLine(NamedTuple):
@@ -60,115 +61,89 @@ class RecognizedDocument(NamedTuple):
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    """Читает аргументы. Сам по себе сеть не использует и файлы не открывает."""
+    """Parse CLI args. Does not open files or use the network."""
+    argv_list = list(argv) if argv is not None else None
+
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--ui", choices=("ru", "en"), default="ru")
+    pre_args, remaining = pre.parse_known_args(argv_list)
+    set_ui_lang(pre_args.ui)
+
     parser = argparse.ArgumentParser(
-        description="Распознаёт текст с фотографии документа A4. Работает локально, без сети.",
-        epilog=(
-            "Примеры:\n"
-            "  python ocr.py document.jpg\n"
-            "  python ocr.py document.jpg --lang ru+en\n"
-            "  python ocr.py document.jpg -o result.txt\n"
-            "  python ocr.py page1.jpg page2.png\n"
-            "  python ocr.py resources/\n"
-            "  python ocr.py resources/ --per-file\n"
-            "  python ocr.py scans/ --recursive -o batch.txt\n"
-            "  python ocr.py --download-models\n"
-        ),
+        description=t("cli.description"),
+        epilog=t("cli.epilog"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[pre],
     )
-    parser.add_argument(
-        "images",
-        nargs="*",
-        type=Path,
-        help="Файлы и/или папки с изображениями: .jpg, .jpeg, .png, .webp, .bmp.",
-    )
-    parser.add_argument(
-        "--lang",
-        default=DEFAULT_LANGUAGES,
-        help="Языки через + или запятую. По умолчанию: ru+en.",
-    )
+    parser.add_argument("images", nargs="*", type=Path, help=t("cli.images_help"))
+    parser.add_argument("--lang", default=DEFAULT_LANGUAGES, help=t("cli.lang_help"))
     parser.add_argument(
         "-o",
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help="Общий файл результата. По умолчанию: result.txt. Игнорируется с --per-file.",
+        help=t("cli.output_help"),
     )
-    parser.add_argument(
-        "--per-file",
-        action="store_true",
-        help="Пакетный режим: рядом с каждым фото писать отдельный .txt с тем же именем.",
-    )
-    parser.add_argument(
-        "--recursive",
-        action="store_true",
-        help="В папках искать изображения во всех вложенных каталогах.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Дополнительно сохранить координаты блоков и уверенность распознавания.",
-    )
+    parser.add_argument("--per-file", action="store_true", help=t("cli.per_file_help"))
+    parser.add_argument("--recursive", action="store_true", help=t("cli.recursive_help"))
+    parser.add_argument("--debug", action="store_true", help=t("cli.debug_help"))
     parser.add_argument(
         "--no-preprocess",
         action="store_true",
-        help="Отдать в OCR исходное фото, без выравнивания и контраста.",
+        help=t("cli.no_preprocess_help"),
     )
     parser.add_argument(
         "--download-models",
         action="store_true",
-        help="Один раз скачать модели в папку models. Единственная команда, которой нужен интернет.",
+        help=t("cli.download_help"),
     )
-    return parser.parse_args(argv)
+    # Re-declare for help text after language is known.
+    parser.set_defaults(ui=pre_args.ui)
+    for action in parser._actions:
+        if action.dest == "ui":
+            action.help = t("cli.ui_help")
+            break
+    return parser.parse_args(remaining)
 
 
 def parse_languages(value: str) -> list[str]:
-    """Превращает 'ru+en' или 'ru,en' в список кодов без повторов."""
+    """Turn 'ru+en' or 'ru,en' into a de-duplicated language list."""
     languages: list[str] = []
     for part in value.replace("+", ",").split(","):
         code = part.strip().lower()
         if code and code not in languages:
             languages.append(code)
     if not languages:
-        raise OcrError("Укажите хотя бы один язык, например --lang ru+en.")
+        raise OcrError(t("err.need_ocr_lang"))
     return languages
 
 
 def run(args: argparse.Namespace) -> None:
-    """Выполняет одну из двух команд: загрузка моделей или распознавание."""
+    """Run either model download or recognition."""
+    set_ui_lang(getattr(args, "ui", get_ui_lang()))
     languages = parse_languages(args.lang)
 
     if args.download_models:
         if args.images:
-            raise OcrError(
-                "Загрузка моделей запускается отдельно, без путей к фото:\n"
-                "  python ocr.py --download-models"
-            )
+            raise OcrError(t("err.download_with_images"))
         download_models(languages)
         return
 
     if not args.images:
-        raise OcrError(
-            "Укажите путь к фотографии или папке.\n"
-            "Пример: python ocr.py document.jpg\n"
-            "Пакетно: python ocr.py resources/ --per-file"
-        )
+        raise OcrError(t("err.need_input"))
 
     image_paths = collect_images(args.images, recursive=args.recursive)
     if not image_paths:
-        raise OcrError(
-            "Не найдено изображений .jpg/.jpeg/.png/.webp/.bmp "
-            "по указанным путям."
-        )
+        raise OcrError(t("err.no_images"))
 
     for image_path in image_paths:
         ensure_supported_image(image_path)
 
-    print(f"Файлов к распознаванию: {len(image_paths)}")
+    print(t("msg.files_count", count=len(image_paths)))
     reader = create_reader(languages, allow_download=False)
     documents: list[RecognizedDocument] = []
     for image_path in image_paths:
-        print(f"Обработка: {image_path}")
+        print(t("msg.processing", path=image_path))
         documents.append(
             recognize_file(
                 reader,
@@ -188,28 +163,32 @@ def run(args: argparse.Namespace) -> None:
     if args.debug:
         debug_path = debug_output_path(args.output)
         save_text(debug_path, render_debug(documents))
-        print(f"Подробности сохранены в {debug_path}")
+        print(t("msg.debug_saved", path=debug_path))
 
 
 def collect_images(paths: Sequence[Path], *, recursive: bool = False) -> list[Path]:
-    """Собирает уникальные изображения из файлов и папок (порядок стабильный)."""
+    """Collect unique images from files and folders in stable order."""
     images: list[Path] = []
     for path in paths:
         if not path.exists():
-            raise OcrError(f"Путь не найден: {path}")
+            raise OcrError(t("err.path_missing", path=path))
         if path.is_file():
             if path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 images.append(path)
             else:
+                ext = path.suffix.lower() or t("msg.no_extension")
                 raise OcrError(
-                    f"Формат {path.suffix.lower() or '(без расширения)'} не поддерживается. "
-                    f"Допустимо: {', '.join(sorted(SUPPORTED_EXTENSIONS))}."
+                    t(
+                        "err.bad_format",
+                        ext=ext,
+                        allowed=", ".join(sorted(SUPPORTED_EXTENSIONS)),
+                    )
                 )
             continue
         if path.is_dir():
             images.extend(list_images_in_directory(path, recursive=recursive))
             continue
-        raise OcrError(f"Это не файл и не папка: {path}")
+        raise OcrError(t("err.not_file_or_dir", path=path))
 
     unique: list[Path] = []
     seen: set[str] = set()
@@ -237,9 +216,9 @@ def write_per_file_results(
     *,
     debug: bool,
 ) -> None:
-    """Пишет document.png -> document.txt рядом с каждым входом."""
+    """Write document.png -> document.txt next to each input."""
     if not documents:
-        raise OcrError("Нет документов для сохранения.")
+        raise OcrError(t("err.no_docs"))
 
     for document in documents:
         output = document.path.with_suffix(".txt")
@@ -251,53 +230,53 @@ def write_per_file_results(
             save_text(debug_path, render_debug((document,)))
             print(f"  debug: {debug_path}")
 
-    print(f"Пакетно сохранено файлов: {len(documents)}")
+    print(t("msg.batch_saved", count=len(documents)))
 
 
 def download_models(languages: Sequence[str]) -> None:
-    """Единственный сценарий, в котором EasyOCR может открыть сеть."""
-    print("Скачивание моделей EasyOCR. Интернет нужен только для этого шага.")
-    print("Языки: " + ", ".join(languages))
+    """Only path where EasyOCR may open the network."""
+    print(t("msg.download_start"))
+    print(t("msg.languages", langs=", ".join(languages)))
     create_reader(languages, allow_download=True)
-    print(f"Модели сохранены в {MODEL_DIR}")
-    print("Дальше распознавание работает без интернета.")
+    print(t("msg.models_saved", path=MODEL_DIR))
+    print(t("msg.offline_ready"))
 
 
 def ensure_supported_image(path: Path) -> None:
-    """Проверяет путь до чтения пикселей и до запуска OCR."""
+    """Validate path before reading pixels or starting OCR."""
     if not path.exists():
-        raise OcrError(f"Файл не найден: {path}")
+        raise OcrError(t("err.file_missing", path=path))
     if not path.is_file():
-        raise OcrError(f"Это не файл: {path}")
+        raise OcrError(t("err.not_file", path=path))
 
     suffix = path.suffix.lower()
     if suffix in SUPPORTED_EXTENSIONS:
         return
 
     allowed = ", ".join(sorted(SUPPORTED_EXTENSIONS))
-    extension = suffix if suffix else "(без расширения)"
-    raise OcrError(f"Формат {extension} не поддерживается. Допустимо: {allowed}.")
+    extension = suffix if suffix else t("msg.no_extension")
+    raise OcrError(t("err.bad_format", ext=extension, allowed=allowed))
 
 
 def recognize_file(reader: Any, path: Path, *, preprocess_image: bool) -> RecognizedDocument:
-    """Читает один файл и возвращает строки в порядке чтения."""
+    """Read one file and return lines in reading order."""
     image = load_image(path)
     try:
         prepared = preprocess(image) if preprocess_image else image
     except cv2.error as error:
-        raise OcrError(f"Не удалось обработать изображение {path.name}: {error}") from error
+        raise OcrError(t("err.preprocess", name=path.name, error=error)) from error
     lines = read_lines(reader, prepared, path)
     return RecognizedDocument(path=path, lines=tuple(lines))
 
 
 def load_image(path: Path) -> np.ndarray:
-    """Читает изображение в формате BGR, который ждёт OpenCV.
+    """Load an image as BGR for OpenCV.
 
-    cv2.imread на Windows теряет пути с кириллицей, поэтому байты читает numpy.
+    cv2.imread drops Cyrillic paths on Windows, so numpy reads the bytes.
     """
     file_bytes = np.fromfile(str(path), dtype=np.uint8)
     if file_bytes.size == 0:
-        raise OcrError(f"Файл пустой: {path}")
+        raise OcrError(t("err.empty_file", path=path))
 
     image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     if image is not None:
@@ -306,30 +285,29 @@ def load_image(path: Path) -> np.ndarray:
 
 
 def load_image_with_pillow(path: Path) -> np.ndarray:
-    """Запасной способ чтения. На выходе тоже BGR, как у OpenCV."""
+    """Fallback loader. Output is BGR like OpenCV."""
     try:
         with Image.open(path) as pil_image:
             rgb = np.array(pil_image.convert("RGB"))
     except (UnidentifiedImageError, OSError) as error:
-        raise OcrError(f"Не удалось открыть изображение: {path}") from error
+        raise OcrError(t("err.open_image", path=path)) from error
 
     if rgb.size == 0:
-        raise OcrError(f"Не удалось открыть изображение: {path}")
+        raise OcrError(t("err.open_image", path=path))
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
 def local_models_present() -> bool:
-    """True, если в models уже лежат веса EasyOCR."""
+    """True when EasyOCR weight files already exist under models/."""
     return MODEL_DIR.is_dir() and any(MODEL_DIR.glob(MODEL_FILE_GLOB))
 
 
 def create_reader(languages: Sequence[str], *, allow_download: bool) -> Any:
-    """Создаёт локальный OCR.
+    """Create a local OCR reader.
 
-    allow_download=True допустим только из download_models.
-    Распознавание вызывает эту функцию с allow_download=False.
-    Перед офлайн-запуском проверяем папку models сами: иначе EasyOCR
-    может вести себя менее предсказуемо, чем наша ошибка.
+    allow_download=True is only for download_models.
+    Recognition always calls this with allow_download=False and checks models/
+    first so missing weights become our error instead of a network attempt.
     """
     easyocr = import_easyocr()
     if allow_download:
@@ -349,10 +327,12 @@ def create_reader(languages: Sequence[str], *, allow_download: bool) -> Any:
     except FileNotFoundError as error:
         raise missing_models_error(allow_download) from error
     except ValueError as error:
-        raise OcrError(f"EasyOCR не принял языки {list(languages)}: {error}") from error
+        raise OcrError(
+            t("err.easyocr_langs", langs=list(languages), error=error)
+        ) from error
     except OSError as error:
         if allow_download:
-            raise OcrError(f"Не удалось скачать модели: {error}") from error
+            raise OcrError(t("err.download_failed", error=error)) from error
         raise missing_models_error(allow_download) from error
 
 
@@ -360,40 +340,31 @@ def import_easyocr() -> Any:
     try:
         import easyocr
     except ModuleNotFoundError as error:
-        raise OcrError(
-            "Не установлен пакет easyocr. Установите зависимости из README, раздел «Установка»."
-        ) from error
+        raise OcrError(t("err.no_easyocr")) from error
     return easyocr
 
 
 def missing_models_error(allow_download: bool) -> OcrError:
     if allow_download:
-        return OcrError(
-            "Не удалось получить модели EasyOCR. Проверьте интернет и повторите:\n"
-            "  python ocr.py --download-models"
-        )
-    return OcrError(
-        "Локальные модели не найдены в папке models.\n"
-        "Один раз выполните: python ocr.py --download-models\n"
-        "Для этой команды нужен интернет. Само распознавание в сеть не обращается."
-    )
+        return OcrError(t("err.models_download_failed"))
+    return OcrError(t("err.models_missing"))
 
 
 @contextmanager
 def silence_library_noise() -> Iterator[None]:
-    """Скрывает предупреждения torch/EasyOCR. Наш вывод для пользователя не меняет."""
+    """Hide torch/EasyOCR warnings without changing our own output."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         yield
 
 
 def read_lines(reader: Any, image: np.ndarray, path: Path) -> list[TextLine]:
-    """Запускает OCR и сортирует блоки сверху вниз, слева направо."""
+    """Run OCR and sort blocks top-to-bottom, left-to-right."""
     try:
         with silence_library_noise():
             raw_rows = reader.readtext(image, detail=1, paragraph=False)
     except Exception as error:
-        raise OcrError(f"Не удалось распознать файл {path.name}: {error}") from error
+        raise OcrError(t("err.recognize", name=path.name, error=error)) from error
 
     lines: list[TextLine] = []
     for box, text, confidence in raw_rows:
@@ -403,7 +374,7 @@ def read_lines(reader: Any, image: np.ndarray, path: Path) -> list[TextLine]:
 
 
 def reading_order_key(line: TextLine) -> tuple[int, int]:
-    """Ключ порядка чтения. Близкие по вертикали блоки попадают в одну строку."""
+    """Reading-order sort key. Nearby vertical boxes share one row bucket."""
     top = min(y for _x, y in line.box)
     left = min(x for x, _y in line.box)
     row = top // LINE_GROUP_PIXELS
@@ -411,7 +382,7 @@ def reading_order_key(line: TextLine) -> tuple[int, int]:
 
 
 def render_documents(documents: Sequence[RecognizedDocument]) -> str:
-    """Один файл — только текст. Несколько файлов — текст с заголовком имени."""
+    """One file: plain text. Several files: name headers between blocks."""
     if len(documents) == 1:
         return document_text(documents[0])
 
@@ -425,20 +396,20 @@ def render_documents(documents: Sequence[RecognizedDocument]) -> str:
 def document_text(document: RecognizedDocument) -> str:
     parts = [line.text.strip() for line in document.lines if line.text.strip()]
     if not parts:
-        return "Текст не распознан."
+        return t("msg.no_text")
     return "\n".join(parts)
 
 
 def render_debug(documents: Sequence[RecognizedDocument]) -> str:
-    """Текст для человека: номер строки, уверенность и четыре угла блока."""
+    """Human-readable debug dump: index, confidence, box corners."""
     blocks: list[str] = []
     for document in documents:
-        rows = [f"Файл: {document.path}"]
+        rows = [t("msg.debug_file", path=document.path)]
         if not document.lines:
-            rows.append("Текст не распознан.")
+            rows.append(t("msg.no_text"))
         for number, line in enumerate(document.lines, start=1):
             rows.append(f"{number}. [{line.confidence:.2f}] {line.text}")
-            rows.append(f"    координаты: {format_box(line.box)}")
+            rows.append(t("msg.debug_coords", box=format_box(line.box)))
         blocks.append("\n".join(rows))
     return "\n\n".join(blocks)
 
@@ -448,13 +419,13 @@ def format_box(box: Sequence[tuple[int, int]]) -> str:
 
 
 def debug_output_path(output: Path) -> Path:
-    """result.txt -> result.debug.txt, рядом с основным результатом."""
+    """result.txt -> result.debug.txt next to the main output."""
     suffix = output.suffix or ".txt"
     return output.with_name(f"{output.stem}.debug{suffix}")
 
 
 def save_text(path: Path, text: str) -> None:
-    """Пишет UTF-8 и завершающий перевод строки. Существующий файл заменяется."""
+    """Write UTF-8 with a trailing newline. Replaces an existing file."""
     directory = path.parent
     if str(directory) not in ("", ".") and not directory.exists():
         directory.mkdir(parents=True, exist_ok=True)
@@ -466,13 +437,13 @@ def save_text(path: Path, text: str) -> None:
 
 
 def print_result(text: str, output: Path) -> None:
-    print("Распознанный текст:")
+    print(t("msg.recognized_header"))
     print(text)
-    print(f"Текст сохранён в {output}")
+    print(t("msg.text_saved", path=output))
 
 
 def configure_console() -> None:
-    """Просит консоль Windows принять UTF-8. Если это не вышло, работу не прерывает."""
+    """Ask Windows consoles for UTF-8. Ignore failure and continue."""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
@@ -488,7 +459,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         run(parse_args(argv))
     except OcrError as error:
-        print(f"Ошибка: {error}", file=sys.stderr)
+        print(t("msg.error_prefix", error=error), file=sys.stderr)
         return 1
     return 0
 

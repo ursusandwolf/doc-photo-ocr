@@ -1,7 +1,7 @@
-"""Подготовка фото перед OCR.
+"""Image preparation before OCR.
 
-Порядок фиксирован: перспектива → серый цвет → шум → контраст → наклон.
-Жёсткой бинаризации нет: EasyOCR на фото читает серый кадр лучше.
+Fixed order: perspective -> grayscale -> denoise -> contrast -> deskew.
+No hard binarization: EasyOCR reads gray photo pages better than black/white.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ MIN_TEXT_PIXELS = 100
 
 
 def preprocess(image: np.ndarray) -> np.ndarray:
-    """Готовит фото к OCR и возвращает одноканальное изображение."""
+    """Prepare a photo for OCR and return a single-channel image."""
     aligned = straighten_document(image)
     gray = to_gray(aligned)
     denoised = cv2.medianBlur(gray, MEDIAN_BLUR_SIZE)
@@ -44,7 +44,7 @@ def to_gray(image: np.ndarray) -> np.ndarray:
 
 
 def increase_contrast(gray: np.ndarray) -> np.ndarray:
-    """Поднимает локальный контраст. На крошечном кадре возвращает его как есть."""
+    """Raise local contrast. Tiny frames are returned unchanged."""
     height, width = gray.shape[:2]
     tile_width, tile_height = CLAHE_TILE_SIZE
     if height < tile_height or width < tile_width:
@@ -55,7 +55,7 @@ def increase_contrast(gray: np.ndarray) -> np.ndarray:
 
 
 def straighten_document(image: np.ndarray) -> np.ndarray:
-    """Выравнивает перспективу, только если контур похож на отдельный лист."""
+    """Correct perspective only when the contour looks like a separate sheet."""
     corners = find_document_corners(image)
     if corners is None:
         return image
@@ -63,7 +63,7 @@ def straighten_document(image: np.ndarray) -> np.ndarray:
 
 
 def find_document_corners(image: np.ndarray) -> Optional[np.ndarray]:
-    """Ищет четыре угла листа. None — выравнивать перспективу не нужно."""
+    """Find four sheet corners. None means perspective warp is skipped."""
     small, scale = resize_for_detection(image)
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -91,7 +91,7 @@ def find_document_corners(image: np.ndarray) -> Optional[np.ndarray]:
 
 
 def resize_for_detection(image: np.ndarray) -> tuple[np.ndarray, float]:
-    """Уменьшает кадр для поиска контура. scale переводит точки в исходный размер."""
+    """Downscale for contour search. scale maps points back to the original size."""
     height, width = image.shape[:2]
     longest = max(height, width)
     if longest <= DETECT_MAX_SIDE:
@@ -104,7 +104,7 @@ def resize_for_detection(image: np.ndarray) -> tuple[np.ndarray, float]:
 
 
 def order_corners(points: np.ndarray) -> np.ndarray:
-    """Порядок углов: левый верх, правый верх, правый низ, левый низ."""
+    """Corner order: top-left, top-right, bottom-right, bottom-left."""
     ordered = np.zeros((4, 2), dtype=np.float32)
     sums = points.sum(axis=1)
     ordered[0] = points[np.argmin(sums)]
@@ -117,7 +117,7 @@ def order_corners(points: np.ndarray) -> np.ndarray:
 
 
 def accept_document_corners(corners: np.ndarray, image_shape: tuple[int, ...]) -> bool:
-    """Отсекает слишком узкие контуры и контур, совпадающий с самим кадром."""
+    """Reject skinny contours and a contour that is the frame itself."""
     sides = corner_side_lengths(corners)
     longest = max(sides)
     if longest < MIN_SHEET_SIDE:
@@ -138,7 +138,7 @@ def corner_side_lengths(corners: np.ndarray) -> list[float]:
 
 
 def corners_are_inside_frame(corners: np.ndarray, image_shape: tuple[int, ...]) -> bool:
-    """Если все углы на границе кадра — это сам кадр, перспективу не трогаем."""
+    """If every corner sits on the frame border, this is the frame — do not warp."""
     height, width = image_shape[:2]
     margin_x = width * BORDER_MARGIN_RATIO
     margin_y = height * BORDER_MARGIN_RATIO
@@ -158,7 +158,7 @@ def corners_are_inside_frame(corners: np.ndarray, image_shape: tuple[int, ...]) 
 
 
 def warp_document(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
-    """Переносит найденный четырёхугольник в прямоугольный вид листа."""
+    """Map the detected quadrilateral onto a rectangular page."""
     top = float(np.linalg.norm(corners[1] - corners[0]))
     bottom = float(np.linalg.norm(corners[2] - corners[3]))
     left = float(np.linalg.norm(corners[3] - corners[0]))
@@ -182,7 +182,7 @@ def warp_document(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
 
 
 def deskew(gray: np.ndarray) -> np.ndarray:
-    """Поворачивает текст к горизонтали. Неуверенный угол оставляет как есть."""
+    """Rotate text toward horizontal. Uncertain angles are left unchanged."""
     angle = estimate_skew_degrees(gray)
     if angle is None:
         return gray
@@ -200,7 +200,7 @@ def deskew(gray: np.ndarray) -> np.ndarray:
 
 
 def estimate_skew_degrees(gray: np.ndarray) -> Optional[float]:
-    """Оценивает наклон по тёмным пикселям текста. None — поворот применять нельзя."""
+    """Estimate skew from dark text pixels. None means rotation must not run."""
     _threshold, binary = cv2.threshold(
         gray,
         0,
@@ -219,7 +219,7 @@ def estimate_skew_degrees(gray: np.ndarray) -> Optional[float]:
 
 
 def rotation_to_level_text(raw_angle: float) -> float:
-    """Переводит угол minAreaRect в угол для cv2.getRotationMatrix2D."""
+    """Convert minAreaRect angle into a cv2.getRotationMatrix2D angle."""
     if raw_angle < -45.0:
         return -(90.0 + raw_angle)
     return -raw_angle
