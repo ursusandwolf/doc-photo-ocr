@@ -49,6 +49,11 @@ MODEL_DIR = Path(__file__).resolve().parent / "models"
 # Line clustering: prefer vertical overlap; center distance is a fallback.
 MIN_VERTICAL_OVERLAP_RATIO = 0.5
 MAX_CENTER_Y_RATIO = 0.35
+# Weak (center-only) matches must stay near in X — stops wrong-row merges across columns.
+MAX_HORIZONTAL_GAP_RATIO = 2.5
+# Skew from clearly wide boxes only; thin samples are detector noise.
+MIN_SKEW_WIDTH_HEIGHT_RATIO = 2.5
+MIN_SKEW_SAMPLES = 3
 
 # EasyOCR stores detection/recognition weights under models/.
 # Without .pth files we fail early with a clear offline error.
@@ -704,18 +709,28 @@ def box_reading_angle_degrees(line: TextLine) -> float:
 
 
 def estimate_page_skew_degrees(lines: Sequence[TextLine]) -> float:
-    """Median text tilt from wide boxes. Positive means text rises to the right."""
+    """Median text tilt from wide boxes. Positive means text rises to the right.
+
+    Falls back to 0 when too few wide samples — preprocess deskew should lead then.
+    """
     samples: list[tuple[float, float]] = []
     for item in lines:
         width = float(box_width(item))
         height = float(box_height(item))
-        if width < 1.5 * height:
+        if width < MIN_SKEW_WIDTH_HEIGHT_RATIO * height:
             continue
         angle = box_reading_angle_degrees(item)
         samples.append((angle, width))
-    if not samples:
-        samples = [(box_reading_angle_degrees(item), float(box_width(item))) for item in lines]
-    if not samples:
+    if len(samples) < MIN_SKEW_SAMPLES:
+        # Softer second pass still requires clearly wider-than-tall boxes.
+        samples = []
+        for item in lines:
+            width = float(box_width(item))
+            height = float(box_height(item))
+            if width < 2.0 * height:
+                continue
+            samples.append((box_reading_angle_degrees(item), width))
+    if len(samples) < MIN_SKEW_SAMPLES:
         return 0.0
 
     # Axis-aligned detector noise (angle≈0) must not cancel a real page skew.
@@ -743,10 +758,15 @@ def rotate_point(
 class FlatBox(NamedTuple):
     line: TextLine
     left: float
+    right: float
     top: float
     bottom: float
     center_y: float
     height: float
+
+    @property
+    def width(self) -> float:
+        return max(1.0, self.right - self.left)
 
 
 def flatten_box(line: TextLine, *, skew_degrees: float, origin: tuple[float, float]) -> FlatBox:
@@ -762,6 +782,7 @@ def flatten_box(line: TextLine, *, skew_degrees: float, origin: tuple[float, flo
     return FlatBox(
         line=line,
         left=min(xs),
+        right=max(xs),
         top=top,
         bottom=bottom,
         center_y=(top + bottom) / 2.0,
@@ -787,18 +808,112 @@ def row_median_height(row: Sequence[FlatBox]) -> float:
     return (heights[mid - 1] + heights[mid]) / 2.0
 
 
+def row_median_width(row: Sequence[FlatBox]) -> float:
+    widths = sorted(item.width for item in row)
+    mid = len(widths) // 2
+    if not widths:
+        return 1.0
+    if len(widths) % 2:
+        return float(widths[mid])
+    return (widths[mid - 1] + widths[mid]) / 2.0
+
+
 def row_mean_center_y(row: Sequence[FlatBox]) -> float:
     return sum(item.center_y for item in row) / float(len(row))
 
 
+def nearest_horizontal_gap(row: Sequence[FlatBox], candidate: FlatBox) -> float:
+    """Gap to the closest row member on X; 0 if the candidate overlaps any box in X."""
+    gaps: list[float] = []
+    for item in row:
+        if candidate.left <= item.right and candidate.right >= item.left:
+            return 0.0
+        if candidate.left >= item.right:
+            gaps.append(candidate.left - item.right)
+        else:
+            gaps.append(item.left - candidate.right)
+    return min(gaps) if gaps else 0.0
+
+
+def adaptive_center_y_limit(median_h: float, candidate: FlatBox) -> float:
+    """Tighter center allowance for short/dense boxes; looser for tall ones."""
+    base = MAX_CENTER_Y_RATIO * median_h
+    # Estimated leading ~0.35–0.5 of glyph height on dense A4 photos.
+    estimated_gap = 0.4 * median_h
+    limit = min(base, 0.55 * estimated_gap + 0.2 * median_h)
+    if candidate.height < 0.85 * median_h:
+        limit = min(limit, 0.28 * median_h)
+    return max(0.15 * median_h, limit)
+
+
 def fits_text_row(row: Sequence[FlatBox], candidate: FlatBox) -> bool:
-    """True when candidate belongs on this visual text line."""
+    """True when candidate belongs on this visual text line.
+
+    Strong vertical overlap may join table cells across a wide X gap.
+    Center-only fallback requires horizontal proximity so a right-column
+    word does not attach to a left-column row with a similar center_y.
+    """
     best_overlap = max(vertical_overlap_ratio(item, candidate) for item in row)
-    if best_overlap >= MIN_VERTICAL_OVERLAP_RATIO:
-        return True
     median_h = row_median_height(row)
     center_gap = abs(row_mean_center_y(row) - candidate.center_y)
-    return center_gap <= MAX_CENTER_Y_RATIO * median_h
+
+    if best_overlap >= MIN_VERTICAL_OVERLAP_RATIO:
+        return center_gap <= max(median_h, adaptive_center_y_limit(median_h, candidate) * 2.0)
+
+    if center_gap > adaptive_center_y_limit(median_h, candidate):
+        return False
+    # Weak Y evidence: refuse large column-like X gaps.
+    gap_x = nearest_horizontal_gap(row, candidate)
+    max_gap = max(MAX_HORIZONTAL_GAP_RATIO * row_median_width(row), 1.5 * median_h)
+    if gap_x > max_gap:
+        return False
+    return best_overlap >= 0.15
+
+
+def _cluster_flat_into_rows(flat: Sequence[FlatBox]) -> list[list[FlatBox]]:
+    ordered = sorted(flat, key=lambda item: (item.center_y, item.left))
+    rows: list[list[FlatBox]] = []
+    for item in ordered:
+        best_index = -1
+        best_score = -1.0
+        for index, row in enumerate(rows):
+            if not fits_text_row(row, item):
+                continue
+            score = max(vertical_overlap_ratio(existing, item) for existing in row)
+            score += 1.0 / (1.0 + abs(row_mean_center_y(row) - item.center_y))
+            score += 1.0 / (1.0 + nearest_horizontal_gap(row, item))
+            if score > best_score:
+                best_score = score
+                best_index = index
+        if best_index < 0:
+            rows.append([item])
+        else:
+            rows[best_index].append(item)
+    return [sorted(row, key=lambda item: item.left) for row in rows]
+
+
+def split_column_bands(flat: Sequence[FlatBox]) -> list[list[FlatBox]]:
+    """Split into 2–3 X bands when a clear gutter exists (forms / multi-column).
+
+    Evenly spaced table cells stay in one band — no single dominant gutter.
+    """
+    if len(flat) < 6:
+        return [list(flat)]
+    by_center = sorted(flat, key=lambda item: (item.left + item.right) / 2.0)
+    widths = sorted(item.width for item in by_center)
+    median_w = widths[len(widths) // 2]
+    gutter = max(3.0 * median_w, 2.0 * row_median_height(by_center))
+    bands: list[list[FlatBox]] = [[by_center[0]]]
+    for item in by_center[1:]:
+        prev = bands[-1][-1]
+        gap = item.left - prev.right
+        if gap >= gutter:
+            bands.append([item])
+        else:
+            bands[-1].append(item)
+    if 2 <= len(bands) <= 3 and all(len(band) >= 2 for band in bands):
+        return bands
+    return [list(flat)]
 
 
 def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
@@ -816,25 +931,10 @@ def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
     origin = (origin_x, origin_y)
     flat = [flatten_box(item, skew_degrees=skew, origin=origin) for item in lines]
 
-    ordered = sorted(flat, key=lambda item: (item.center_y, item.left))
     rows: list[list[FlatBox]] = []
-    for item in ordered:
-        best_index = -1
-        best_score = -1.0
-        for index, row in enumerate(rows):
-            if not fits_text_row(row, item):
-                continue
-            score = max(vertical_overlap_ratio(existing, item) for existing in row)
-            score += 1.0 / (1.0 + abs(row_mean_center_y(row) - item.center_y))
-            if score > best_score:
-                best_score = score
-                best_index = index
-        if best_index < 0:
-            rows.append([item])
-        else:
-            rows[best_index].append(item)
+    for band in split_column_bands(flat):
+        rows.extend(_cluster_flat_into_rows(band))
 
-    rows = [sorted(row, key=lambda item: item.left) for row in rows]
     rows.sort(key=row_mean_center_y)
     return [[item.line for item in row] for row in rows]
 

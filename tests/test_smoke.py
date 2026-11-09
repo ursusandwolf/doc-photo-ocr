@@ -334,6 +334,51 @@ class TextLayoutSmokeTests(unittest.TestCase):
         self.assertEqual(len(rows[1]), 2)
         self.assertEqual(ocr.box_as_free_list_item(rows[0][0].box)[0], [10, 100])
 
+    def test_weak_y_match_does_not_cross_large_column_gap(self) -> None:
+        # Left label + right value on the next visual row with close center_y —
+        # must not glue into one scrambled line via center-only fallback.
+        lines = (
+            ocr.TextLine("Товар", 0.9, ((10, 100), (80, 100), (80, 128), (10, 128))),
+            ocr.TextLine("А", 0.9, ((90, 100), (110, 100), (110, 128), (90, 128))),
+            ocr.TextLine("12", 0.9, ((400, 118), (440, 118), (440, 146), (400, 146))),
+            ocr.TextLine("шт", 0.9, ((450, 118), (490, 118), (490, 146), (450, 146))),
+        )
+        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines), spell=False)
+        lines_out = text.splitlines()
+        self.assertGreaterEqual(len(lines_out), 2)
+        self.assertTrue(lines_out[0].startswith("Товар"))
+        self.assertNotIn("12", lines_out[0])
+
+    def test_table_cells_same_row_join_across_wide_x_gap(self) -> None:
+        # Strong vertical overlap keeps Кол-во / Цена / Сумма on one line.
+        lines = (
+            ocr.TextLine("Кол-во", 0.9, ((10, 100), (90, 100), (90, 130), (10, 130))),
+            ocr.TextLine("2", 0.9, ((200, 102), (230, 102), (230, 128), (200, 128))),
+            ocr.TextLine("Цена", 0.9, ((350, 100), (420, 100), (420, 130), (350, 130))),
+            ocr.TextLine("100", 0.9, ((500, 101), (560, 101), (560, 129), (500, 129))),
+        )
+        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines), spell=False)
+        self.assertEqual(text.splitlines()[0], "Кол-во 2 Цена 100")
+
+    def test_two_column_bands_cluster_separately(self) -> None:
+        lines = (
+            ocr.TextLine("LeftA", 0.9, ((10, 100), (80, 100), (80, 128), (10, 128))),
+            ocr.TextLine("LeftB", 0.9, ((10, 160), (80, 160), (80, 188), (10, 188))),
+            ocr.TextLine("RightA", 0.9, ((400, 100), (480, 100), (480, 128), (400, 128))),
+            ocr.TextLine("RightB", 0.9, ((400, 160), (480, 160), (480, 188), (400, 188))),
+            ocr.TextLine("LeftC", 0.9, ((10, 220), (80, 220), (80, 248), (10, 248))),
+            ocr.TextLine("RightC", 0.9, ((400, 220), (480, 220), (480, 248), (400, 248))),
+        )
+        rows = ocr.group_lines_into_rows(lines)
+        texts = [[" ".join(p.text for p in row)][0] for row in rows]
+        # No mixed Left*/Right* on the same clustered row.
+        for row in rows:
+            names = [part.text for part in row]
+            self.assertFalse(
+                any(n.startswith("Left") for n in names) and any(n.startswith("Right") for n in names),
+                texts,
+            )
+
     def test_parse_easyocr_results_skips_empty(self) -> None:
         raw = [
             ([[0, 0], [10, 0], [10, 10], [0, 10]], "Hello", 0.9),
