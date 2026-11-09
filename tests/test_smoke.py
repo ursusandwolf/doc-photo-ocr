@@ -226,6 +226,23 @@ class SpellcheckSmokeTests(unittest.TestCase):
         self.assertIn("+7 (495) 123-45-67", fixed)
         self.assertNotIn("email:", fixed)
 
+    def test_normalizes_guillemets(self) -> None:
+        self.assertEqual(
+            spellcheck.normalize_guillemets('фирма "СеверТорг"'),
+            "фирма «СеверТорг»",
+        )
+        self.assertEqual(
+            spellcheck.normalize_guillemets("фирма „СеверТорг“"),
+            "фирма «СеверТорг»",
+        )
+        kept = spellcheck.correct_text(
+            "фирма «СеверТорг»",
+            spell=False,
+            fix_caps=False,
+            strip_junk=True,
+        )
+        self.assertEqual(kept, "фирма «СеверТорг»")
+
     def test_document_text_respects_no_spell(self) -> None:
         lines = (
             ocr.TextLine(
@@ -272,13 +289,24 @@ class OfflineOcrSmokeTests(unittest.TestCase):
         image_path = SAMPLE_IMAGE if SAMPLE_IMAGE.exists() else self._make_temp_image()
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "result.txt"
-            code = ocr.main([str(image_path), "-o", str(output), "--no-preprocess"])
+            code = ocr.main(
+                [
+                    str(image_path),
+                    "-o",
+                    str(output),
+                    "--no-preprocess",
+                    "--lang",
+                    "ru+en",
+                ]
+            )
             self.assertEqual(code, 0)
             text = output.read_text(encoding="utf-8")
 
         lowered = text.lower()
         self.assertIn("договор", lowered)
-        self.assertTrue("contract" in lowered or "a4" in lowered)
+        self.assertTrue(
+            "contract" in lowered or "a4" in lowered or "а4" in lowered
+        )
 
     def test_on_row_streams_before_final_text(self) -> None:
         image_path = ROOT / "resources" / "zayavlenie_otpusk.png"

@@ -110,9 +110,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help=t("cli.no_fix_caps_help"),
     )
     parser.add_argument(
-        "--no-strip-junk",
+        "--strip-junk",
         action="store_true",
-        help=t("cli.no_strip_junk_help"),
+        help=t("cli.strip_junk_help"),
     )
     parser.add_argument(
         "--download-models",
@@ -187,7 +187,7 @@ def run(args: argparse.Namespace) -> None:
 
     spell = not args.no_spell
     fix_caps = not args.no_fix_caps
-    strip_junk = not args.no_strip_junk
+    strip_junk = bool(args.strip_junk)
     if args.per_file:
         write_per_file_results(
             documents,
@@ -230,7 +230,7 @@ def write_per_file_results(
     debug: bool,
     spell: bool = True,
     fix_caps: bool = True,
-    strip_junk: bool = True,
+    strip_junk: bool = False,
 ) -> None:
     """Write document.png -> document.txt next to each input."""
     if not documents:
@@ -321,21 +321,23 @@ def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
     per_file = bool(request.get("per_file", False))
     spell = bool(request.get("spell", True))
     fix_caps = bool(request.get("fix_caps", True))
-    strip_junk = bool(request.get("strip_junk", True))
+    strip_junk = bool(request.get("strip_junk", False))
 
     for image_path in images:
         ensure_supported_image(image_path)
 
     def emit_line(text: str) -> None:
-        if text and (spell or fix_caps or strip_junk):
-            payload = correct_text(
+        # Always normalize quotes; other polish follows flags.
+        payload = (
+            correct_text(
                 text,
                 spell=spell,
                 fix_caps=fix_caps,
                 strip_junk=strip_junk,
             )
-        else:
-            payload = text
+            if text
+            else text
+        )
         emit_worker("LINE", payload)
 
     def emit_rows(count: int) -> None:
@@ -811,7 +813,7 @@ def render_documents(
     *,
     spell: bool = True,
     fix_caps: bool = True,
-    strip_junk: bool = True,
+    strip_junk: bool = False,
 ) -> str:
     """One file: plain text. Several files: name headers between blocks."""
     if len(documents) == 1:
@@ -835,7 +837,7 @@ def document_text(
     *,
     spell: bool = True,
     fix_caps: bool = True,
-    strip_junk: bool = True,
+    strip_junk: bool = False,
 ) -> str:
     """Join words on the same visual row with spaces; rows with newlines."""
     rows = group_lines_into_rows(document.lines)
@@ -847,8 +849,7 @@ def document_text(
     if not rendered:
         return t("msg.no_text")
     text = "\n".join(rendered)
-    if not spell and not fix_caps and not strip_junk:
-        return text
+    # Always normalize quotes; other polish follows flags.
     return correct_text(
         text,
         spell=spell,

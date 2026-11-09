@@ -99,7 +99,7 @@ class OcrEngine:
         ui: str,
         spell: bool = True,
         fix_caps: bool = True,
-        strip_junk: bool = True,
+        strip_junk: bool = False,
         on_file: Callable[[int, int, str], None],
         on_line: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
@@ -198,7 +198,7 @@ class App(tk.Tk):
         self.output_path = tk.StringVar(value=str(DEFAULT_OUTPUT))
         self.spell_enabled = tk.BooleanVar(value=True)
         self.fix_caps_enabled = tk.BooleanVar(value=True)
-        self.strip_junk_enabled = tk.BooleanVar(value=True)
+        self.strip_junk_enabled = tk.BooleanVar(value=False)
         self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.status_python = tk.StringVar()
         self.status_libs = tk.StringVar()

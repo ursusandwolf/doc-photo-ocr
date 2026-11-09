@@ -25,14 +25,21 @@ WORD_PATTERN = re.compile(
 MIN_WORD_LEN = 3
 
 # Always drop these — almost never valid in Russian office OCR.
+# Guillemets «» are kept (Russian quotation marks).
 ALWAYS_JUNK = frozenset(
-    "~`^|\\<>«»„“”‚‘’…�•§¤¿¡□■◆◇▪▫●○★☆►◄▲▼©®™"
+    "~`^|\\<>‚‘’…�•§¤¿¡□■◆◇▪▫●○★☆►◄▲▼©®™"
 )
 
 # If 2+ of these sit in a row, the whole run is OCR garbage
 # (keeps a single № % : ; ! ? ( ) / " for real text).
-NOISE_RUN_CHARS = '!"№%;:?*(~`|;\\/„“”«»\'"'
+NOISE_RUN_CHARS = '!"№%;:?*(~`|;\\/\'"'
 NOISE_RUN = re.compile(rf"[{re.escape(NOISE_RUN_CHARS)}]{{2,}}")
+
+# Normalize various quote styles to Russian guillemets «».
+QUOTES_LOW_HIGH = re.compile(r"„([^„“\n]+)“")
+QUOTES_CURLY = re.compile(r"“([^”\n]+)”")
+QUOTES_STRAIGHT = re.compile(r'"([^"\n]+)"')
+QUOTES_ANGLE_SPACED = re.compile(r"«\s+|\s+»")
 
 # Lone noise symbols not glued to letters/digits.
 ISOLATED_NOISE = re.compile(
@@ -172,6 +179,20 @@ def _strip_junk_raw(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def normalize_guillemets(text: str) -> str:
+    """Turn paired ASCII/curly quotes into Russian guillemets «…»."""
+    if not text:
+        return text
+    cleaned = QUOTES_LOW_HIGH.sub(r"«\1»", text)
+    cleaned = QUOTES_CURLY.sub(r"«\1»", cleaned)
+    cleaned = QUOTES_STRAIGHT.sub(r"«\1»", cleaned)
+    cleaned = QUOTES_ANGLE_SPACED.sub(
+        lambda match: "«" if match.group(0).startswith("«") else "»",
+        cleaned,
+    )
+    return cleaned
+
+
 def strip_junk_text(text: str) -> str:
     """Remove OCR garbage characters; keep e-mail addresses and phone numbers."""
     if not text:
@@ -185,15 +206,18 @@ def correct_text(
     *,
     spell: bool = True,
     fix_caps: bool = True,
-    strip_junk: bool = True,
+    strip_junk: bool = False,
 ) -> str:
-    """Polish OCR text: junk chars, weird caps, dictionary fixes."""
+    """Polish OCR text: quotes, optional junk/caps/dictionary fixes."""
     if not text:
         return text
-    if not spell and not fix_caps and not strip_junk:
-        return text
 
-    masked, saved = _mask_protected_spans(text)
+    # Guillemets first so „…“ / "…" become «…» and are not treated as junk.
+    working = normalize_guillemets(text)
+    if not spell and not fix_caps and not strip_junk:
+        return working
+
+    masked, saved = _mask_protected_spans(working)
     working = _strip_junk_raw(masked) if strip_junk else masked
 
     if spell or fix_caps:
@@ -203,7 +227,6 @@ def correct_text(
         for match in WORD_PATTERN.finditer(working):
             parts.append(working[last : match.start()])
             token = match.group(0)
-            # Placeholders use § digits § — skip letter tokens only.
             parts.append(
                 correct_token(
                     token,
@@ -218,8 +241,9 @@ def correct_text(
         working = "".join(parts)
 
     restored = _unmask_protected_spans(working, saved)
-    # Final spacing tidy with fresh masking so restored emails stay intact.
-    return strip_junk_text(restored) if strip_junk else restored
+    if strip_junk:
+        restored = strip_junk_text(restored)
+    return normalize_guillemets(restored)
 
 
 def correct_token(

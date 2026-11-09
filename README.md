@@ -41,6 +41,40 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 - Light preprocessing (no hard binarization).
 - Missing models → clear error, no silent network calls.
 
+## How recognition works
+
+One EasyOCR pipeline (not separate “pick a model” modes in the GUI):
+
+```mermaid
+flowchart LR
+  img[Image] --> prep[preprocess optional]
+  prep --> detect[CRAFT detect]
+  detect --> rows[Cluster boxes into rows]
+  rows --> recog[CRNN recognize per row]
+  recog --> polish[spell / caps / junk / quotes]
+```
+
+1. [`preprocess.py`](preprocess.py) — alignment/contrast (disable with `--no-preprocess`).
+2. **Detect** (CRAFT) — text boxes on the page.
+3. Boxes are clustered into rows ([`read_lines`](ocr.py)).
+4. **Recognize** (CRNN) — text per row.
+5. Post-process in [`spellcheck.py`](spellcheck.py).
+
+Detect and recognize use **different weights**, but always run **together** in one `easyocr.Reader`. There is no GUI switch for “detect only” or an alternate model.
+
+| What | Where | Behavior |
+|---|---|---|
+| OCR languages | `--lang` (CLI), default `ru` | Passed to `Reader(['ru'])` or `Reader(['ru','en'])` |
+| UI language | `--ui` / GUI combo | Labels only, not models |
+
+With `--lang ru+en`, EasyOCR keeps one shared reader with several recognition dictionaries and reads mixed text in a **single** pass (not two separate runs). Weights live in [`models/`](models/) (`.pth`); download with `python ocr.py --download-models`.
+
+What you can change today:
+
+- CLI: `python ocr.py --lang ru` or `--lang ru+en` (and other EasyOCR codes).
+- GUI worker uses CLI defaults (`DEFAULT_LANGUAGES`) — no model picker in the window.
+- Post-process options (spell, caps, junk) are not OCR models.
+
 ## Design
 
 Core: [`ocr.py`](ocr.py) + [`preprocess.py`](preprocess.py). Window: [`gui.py`](gui.py). UI strings: [`i18n.py`](i18n.py) (ru default / en).
