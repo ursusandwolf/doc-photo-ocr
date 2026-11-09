@@ -8,7 +8,10 @@
 4. Прочитать изображение (в том числе путь с кириллицей).
 5. Подготовить фото, если не передан --no-preprocess.
 6. Распознать текст локальной моделью EasyOCR на CPU.
-7. Напечатать текст и записать его в result.txt.
+7. Напечатать текст и записать в result.txt (или по файлу в --per-file).
+
+Входы: файлы и/или папки. Папка собирает изображения первого уровня;
+с --recursive — и из вложенных каталогов.
 
 Распознавание всегда создаёт Reader с download_enabled=False.
 Скачивание возможно только в ветке --download-models.
@@ -66,6 +69,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "  python ocr.py document.jpg --lang ru+en\n"
             "  python ocr.py document.jpg -o result.txt\n"
             "  python ocr.py page1.jpg page2.png\n"
+            "  python ocr.py resources/\n"
+            "  python ocr.py resources/ --per-file\n"
+            "  python ocr.py scans/ --recursive -o batch.txt\n"
             "  python ocr.py --download-models\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -74,7 +80,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "images",
         nargs="*",
         type=Path,
-        help="Пути к изображениям: .jpg, .jpeg, .png, .webp, .bmp.",
+        help="Файлы и/или папки с изображениями: .jpg, .jpeg, .png, .webp, .bmp.",
     )
     parser.add_argument(
         "--lang",
@@ -86,7 +92,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help="Файл для текста. По умолчанию: result.txt.",
+        help="Общий файл результата. По умолчанию: result.txt. Игнорируется с --per-file.",
+    )
+    parser.add_argument(
+        "--per-file",
+        action="store_true",
+        help="Пакетный режим: рядом с каждым фото писать отдельный .txt с тем же именем.",
+    )
+    parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="В папках искать изображения во всех вложенных каталогах.",
     )
     parser.add_argument(
         "--debug",
@@ -133,16 +149,26 @@ def run(args: argparse.Namespace) -> None:
 
     if not args.images:
         raise OcrError(
-            "Укажите путь к фотографии документа.\n"
-            "Пример: python ocr.py document.jpg"
+            "Укажите путь к фотографии или папке.\n"
+            "Пример: python ocr.py document.jpg\n"
+            "Пакетно: python ocr.py resources/ --per-file"
         )
 
-    for image_path in args.images:
+    image_paths = collect_images(args.images, recursive=args.recursive)
+    if not image_paths:
+        raise OcrError(
+            "Не найдено изображений .jpg/.jpeg/.png/.webp/.bmp "
+            "по указанным путям."
+        )
+
+    for image_path in image_paths:
         ensure_supported_image(image_path)
 
+    print(f"Файлов к распознаванию: {len(image_paths)}")
     reader = create_reader(languages, allow_download=False)
     documents: list[RecognizedDocument] = []
-    for image_path in args.images:
+    for image_path in image_paths:
+        print(f"Обработка: {image_path}")
         documents.append(
             recognize_file(
                 reader,
@@ -150,6 +176,10 @@ def run(args: argparse.Namespace) -> None:
                 preprocess_image=not args.no_preprocess,
             )
         )
+
+    if args.per_file:
+        write_per_file_results(documents, debug=args.debug)
+        return
 
     text = render_documents(documents)
     save_text(args.output, text)
@@ -159,6 +189,69 @@ def run(args: argparse.Namespace) -> None:
         debug_path = debug_output_path(args.output)
         save_text(debug_path, render_debug(documents))
         print(f"Подробности сохранены в {debug_path}")
+
+
+def collect_images(paths: Sequence[Path], *, recursive: bool = False) -> list[Path]:
+    """Собирает уникальные изображения из файлов и папок (порядок стабильный)."""
+    images: list[Path] = []
+    for path in paths:
+        if not path.exists():
+            raise OcrError(f"Путь не найден: {path}")
+        if path.is_file():
+            if path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                images.append(path)
+            else:
+                raise OcrError(
+                    f"Формат {path.suffix.lower() or '(без расширения)'} не поддерживается. "
+                    f"Допустимо: {', '.join(sorted(SUPPORTED_EXTENSIONS))}."
+                )
+            continue
+        if path.is_dir():
+            images.extend(list_images_in_directory(path, recursive=recursive))
+            continue
+        raise OcrError(f"Это не файл и не папка: {path}")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for image in images:
+        key = str(image.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(image)
+    return unique
+
+
+def list_images_in_directory(directory: Path, *, recursive: bool) -> list[Path]:
+    iterator = directory.rglob("*") if recursive else directory.iterdir()
+    found = [
+        child
+        for child in iterator
+        if child.is_file() and child.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+    return sorted(found, key=lambda item: str(item).lower())
+
+
+def write_per_file_results(
+    documents: Sequence[RecognizedDocument],
+    *,
+    debug: bool,
+) -> None:
+    """Пишет document.png -> document.txt рядом с каждым входом."""
+    if not documents:
+        raise OcrError("Нет документов для сохранения.")
+
+    for document in documents:
+        output = document.path.with_suffix(".txt")
+        text = document_text(document)
+        save_text(output, text)
+        print(f"{document.path.name} -> {output}")
+        if debug:
+            debug_path = debug_output_path(output)
+            save_text(debug_path, render_debug((document,)))
+            print(f"  debug: {debug_path}")
+
+    print(f"Пакетно сохранено файлов: {len(documents)}")
 
 
 def download_models(languages: Sequence[str]) -> None:

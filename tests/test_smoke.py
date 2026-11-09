@@ -53,20 +53,28 @@ class PreprocessSmokeTests(unittest.TestCase):
         self.assertEqual(ocr.local_models_present(), any(MODELS_DIR.glob("*.pth")))
 
 
-class GuiHelperSmokeTests(unittest.TestCase):
+class BatchPathSmokeTests(unittest.TestCase):
     def test_collect_images_from_file_and_folder(self) -> None:
-        import gui
-
         with tempfile.TemporaryDirectory() as temp_dir:
             folder = Path(temp_dir)
             photo = folder / "page.png"
             photo.write_bytes(b"not-needed-for-collect")
-            nested = folder / "skip.txt"
-            nested.write_text("x", encoding="utf-8")
-            images = gui.collect_images([photo, folder])
-            names = [item.name for item in images]
-            self.assertEqual(names.count("page.png"), 1)
-            self.assertTrue(all(item.suffix.lower() == ".png" for item in images))
+            (folder / "skip.txt").write_text("x", encoding="utf-8")
+            nested = folder / "sub"
+            nested.mkdir()
+            deep = nested / "deep.jpg"
+            deep.write_bytes(b"x")
+
+            flat = ocr.collect_images([photo, folder], recursive=False)
+            self.assertEqual([item.name for item in flat], ["page.png"])
+
+            deep_list = ocr.collect_images([folder], recursive=True)
+            names = sorted(item.name for item in deep_list)
+            self.assertEqual(names, ["deep.jpg", "page.png"])
+
+    def test_per_file_output_name(self) -> None:
+        path = Path("resources/zayavlenie_otpusk.png")
+        self.assertEqual(path.with_suffix(".txt").name, "zayavlenie_otpusk.txt")
 
 
 @unittest.skipUnless(

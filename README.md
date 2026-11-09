@@ -46,7 +46,7 @@
 ## Что умеет
 
 - GUI: установка одной кнопкой, drag-and-drop файла или папки, сохранение `result.txt`.
-- CLI: `python ocr.py document.jpg`.
+- CLI с пакетным режимом: файлы, папки, `--per-file`, `--recursive`.
 - Читает `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, в том числе путь с кириллицей.
 - Распознаёт русский и английский текст.
 - Несколько фото за один запуск пишет в один файл.
@@ -248,17 +248,23 @@ python ocr.py path\to\document.jpg
 python ocr.py path\to\document.jpg --lang ru+en
 python ocr.py path\to\document.jpg -o result.txt
 python ocr.py page1.jpg page2.png
+python ocr.py resources\
+python ocr.py resources\ --per-file
+python ocr.py scans\ --recursive -o batch.txt
 python ocr.py document.jpg --debug
 python ocr.py document.jpg --no-preprocess
 ```
 
 | Аргумент | Назначение |
 | --- | --- |
-| `--lang ru+en` | Языки через `+` или запятую. По умолчанию `ru+en`. Повторы отбрасываются. |
-| `-o result.txt` | Куда записать текст. По умолчанию `result.txt` в текущей папке. |
-| `--debug` | Рядом пишется `result.debug.txt`: номер строки, уверенность и четыре угла. |
-| `--no-preprocess` | Не менять геометрию и контраст. В OCR уходит исходный кадр. |
-| `--download-models` | Один раз скачать модели. Пути к фото в этой команде не передаются. |
+| пути | Файлы и/или папки. В папке берутся изображения первого уровня. |
+| `--recursive` | Искать фото и во вложенных папках. |
+| `--per-file` | Пакетно: рядом с каждым фото писать `имя.txt` вместо одного общего файла. |
+| `--lang ru+en` | Языки через `+` или запятую. По умолчанию `ru+en`. |
+| `-o result.txt` | Общий файл результата (не используется с `--per-file`). |
+| `--debug` | Дополнительно координаты и уверенность. |
+| `--no-preprocess` | Без выравнивания и контраста. |
+| `--download-models` | Один раз скачать модели. Без путей к фото. |
 
 Несколько фото сохраняются в один файл. Перед текстом каждого стоит его имя:
 

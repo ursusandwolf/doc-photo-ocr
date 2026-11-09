@@ -26,7 +26,6 @@ OCR_SCRIPT = APP_DIR / "ocr.py"
 DEFAULT_OUTPUT = APP_DIR / "result.txt"
 RUNTIME_PYTHON = APP_DIR / "runtime" / "python.exe"
 MIN_PYTHON = (3, 9)
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
 
 
@@ -200,7 +199,13 @@ class App(tk.Tk):
     def process_paths(self, paths: Sequence[Path]) -> None:
         if self._busy:
             return
-        images = collect_images(paths)
+        try:
+            import ocr as ocr_engine
+
+            images = ocr_engine.collect_images(paths, recursive=False)
+        except Exception as error:  # noqa: BLE001
+            messagebox.showwarning("OCR", str(error))
+            return
         if not images:
             messagebox.showwarning(
                 "OCR",
@@ -447,27 +452,6 @@ def libs_ready() -> bool:
 
 def models_ready() -> bool:
     return MODELS_DIR.is_dir() and any(MODELS_DIR.glob("*.pth"))
-
-
-def collect_images(paths: Sequence[Path]) -> list[Path]:
-    images: list[Path] = []
-    for path in paths:
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
-            images.append(path)
-        elif path.is_dir():
-            for child in sorted(path.iterdir()):
-                if child.is_file() and child.suffix.lower() in IMAGE_EXTENSIONS:
-                    images.append(child)
-
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for image in images:
-        key = str(image.resolve()).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(image)
-    return unique
 
 
 def run_checked(
