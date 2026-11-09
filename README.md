@@ -85,7 +85,7 @@ classDiagram
     }
 
     class Preprocess {
-        <<functions>>
+        <<preprocess.py>>
         +preprocess()
         +straighten_document()
         +increase_contrast()
@@ -319,7 +319,8 @@ python -m unittest tests.test_smoke -v
 ## Состав
 
 ```text
-ocr.py              программа
+ocr.py              CLI, чтение файлов, локальный EasyOCR, вывод
+preprocess.py       подготовка фото (без сети и OCR)
 requirements.txt    зависимости
 README.md           эта инструкция
 .gitignore          models, result.txt и служебные файлы Python

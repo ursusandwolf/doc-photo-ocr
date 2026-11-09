@@ -49,6 +49,9 @@ class PreprocessSmokeTests(unittest.TestCase):
         self.assertEqual(prepared.shape, (900, 700))
         self.assertIsNone(ocr.find_document_corners(page))
 
+    def test_local_models_check_matches_disk(self) -> None:
+        self.assertEqual(ocr.local_models_present(), any(MODELS_DIR.glob("*.pth")))
+
 
 @unittest.skipUnless(
     MODELS_DIR.exists() and any(MODELS_DIR.glob("*.pth")),
