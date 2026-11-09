@@ -36,6 +36,7 @@ from engines import (
 from i18n import get_ui_lang, set_ui_lang, t
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images
+from ocr import DEFAULT_LAYOUT, LAYOUT_NAMES, normalize_layout
 from tesseract_setup import (
     install_tesseract_local,
     is_tesseract_ready,
@@ -54,6 +55,7 @@ RUNTIME_PYTHON = APP_DIR / "runtime" / "python.exe"
 UI_PREF_FILE = APP_DIR / "ui_lang.txt"
 THEME_PREF_FILE = APP_DIR / "ui_theme.txt"
 ENGINE_PREF_FILE = APP_DIR / "ui_engine.txt"
+LAYOUT_PREF_FILE = APP_DIR / "ui_layout.txt"
 DEFAULT_THEME = "light"
 THEME_NAMES = ("light", "gray", "dark")
 # Tk theming tokens (clam). Wait label stays red on every theme.
@@ -189,6 +191,7 @@ class OcrEngine:
         fix_caps: bool = True,
         strip_junk: bool = False,
         invert: bool = False,
+        layout: str = DEFAULT_LAYOUT,
         on_file: Callable[[int, int, str], None],
         on_line: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
@@ -207,6 +210,7 @@ class OcrEngine:
             "fix_caps": fix_caps,
             "strip_junk": strip_junk,
             "invert": invert,
+            "layout": normalize_layout(layout),
         }
         with self._lock:
             self._process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
@@ -293,6 +297,7 @@ class App(tk.Tk):
         self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.ui_theme = tk.StringVar(value=load_theme_pref())
         self.ui_engine = tk.StringVar(value=load_engine_pref())
+        self.ui_layout = tk.StringVar(value=load_layout_pref())
         self.status_line = tk.StringVar()
         self.progress_value = tk.DoubleVar(value=0)
         self.progress_text = tk.StringVar(value="")
@@ -360,6 +365,17 @@ class App(tk.Tk):
         )
         self.engine_combo.pack(side=tk.LEFT, padx=(6, 10))
         self.engine_combo.bind("<<ComboboxSelected>>", self.on_engine_change)
+        self.layout_label = ttk.Label(lang_box)
+        self.layout_label.pack(side=tk.LEFT)
+        self.layout_combo = ttk.Combobox(
+            lang_box,
+            textvariable=self.ui_layout,
+            values=LAYOUT_NAMES,
+            width=7,
+            state="readonly",
+        )
+        self.layout_combo.pack(side=tk.LEFT, padx=(6, 10))
+        self.layout_combo.bind("<<ComboboxSelected>>", self.on_layout_change)
         self.lang_label = ttk.Label(lang_box)
         self.lang_label.pack(side=tk.LEFT)
         self.lang_combo = ttk.Combobox(
@@ -471,6 +487,7 @@ class App(tk.Tk):
         self.privacy_label.configure(text=t("gui.privacy"))
         self.theme_label.configure(text=t("gui.theme"))
         self.engine_label.configure(text=t("gui.engine"))
+        self.layout_label.configure(text=t("gui.layout"))
         self.lang_label.configure(text=t("gui.ui_lang"))
         self.btn_install.configure(text=t("gui.install"))
         self.btn_models.configure(text=t("gui.models"))
@@ -606,6 +623,11 @@ class App(tk.Tk):
         self.ui_theme.set(theme)
         save_theme_pref(theme)
         self.apply_theme()
+
+    def on_layout_change(self, _event: object = None) -> None:
+        layout = normalize_layout(self.ui_layout.get())
+        self.ui_layout.set(layout)
+        save_layout_pref(layout)
 
     def on_engine_change(self, _event: object = None) -> None:
         engine = normalize_engine(self.ui_engine.get())
@@ -1063,6 +1085,7 @@ class App(tk.Tk):
             fix_caps=bool(self.fix_caps_enabled.get()),
             strip_junk=bool(self.strip_junk_enabled.get()),
             invert=bool(self.invert_enabled.get()),
+            layout=normalize_layout(self.ui_layout.get()),
             on_file=on_file,
             on_line=on_line,
             on_rows=on_rows,
@@ -1363,6 +1386,24 @@ def load_engine_pref() -> str:
 def save_engine_pref(engine: str) -> None:
     try:
         ENGINE_PREF_FILE.write_text(normalize_engine(engine) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def load_layout_pref() -> str:
+    try:
+        if LAYOUT_PREF_FILE.exists():
+            return normalize_layout(LAYOUT_PREF_FILE.read_text(encoding="utf-8").strip())
+    except OSError:
+        pass
+    except Exception:  # noqa: BLE001 — bad pref falls back to default
+        pass
+    return DEFAULT_LAYOUT
+
+
+def save_layout_pref(layout: str) -> None:
+    try:
+        LAYOUT_PREF_FILE.write_text(normalize_layout(layout) + "\n", encoding="utf-8")
     except OSError:
         return
 

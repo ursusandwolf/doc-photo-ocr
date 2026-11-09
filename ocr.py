@@ -49,9 +49,19 @@ from spellcheck import correct_text
 DEFAULT_LANGUAGES = "ru"
 DEFAULT_OUTPUT = Path("result.txt")
 MODEL_DIR = Path(__file__).resolve().parent / "models"
+# Layout: plain prose (default) vs tables/forms with wide cell gaps.
+LAYOUT_PLAIN = "plain"
+LAYOUT_TABLE = "table"
+LAYOUT_NAMES = (LAYOUT_PLAIN, LAYOUT_TABLE)
+DEFAULT_LAYOUT = LAYOUT_PLAIN
 # Line clustering: prefer vertical overlap; center distance is a fallback.
 MIN_VERTICAL_OVERLAP_RATIO = 0.5
 MAX_CENTER_Y_RATIO = 0.35
+# Plain: strong overlap still needs a tight center match (avoids zigzag merges).
+PLAIN_STRONG_CENTER_RATIO = 0.45
+# Plain: max inter-word gap as multiples of median height / width.
+PLAIN_MAX_GAP_HEIGHT_RATIO = 1.5
+PLAIN_MAX_GAP_WIDTH_RATIO = 1.2
 # Weak (center-only) matches must stay near in X — stops wrong-row merges across columns.
 MAX_HORIZONTAL_GAP_RATIO = 2.5
 # Skew from clearly wide boxes only; thin samples are detector noise.
@@ -95,6 +105,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--engine",
         default=DEFAULT_ENGINE,
         help=t("cli.engine_help"),
+    )
+    parser.add_argument(
+        "--layout",
+        default=DEFAULT_LAYOUT,
+        help=t("cli.layout_help"),
     )
     parser.add_argument(
         "-o",
@@ -162,6 +177,13 @@ def parse_languages(value: str) -> list[str]:
     return languages
 
 
+def normalize_layout(value: str) -> str:
+    name = (value or DEFAULT_LAYOUT).strip().lower()
+    if name not in LAYOUT_NAMES:
+        raise OcrError(t("err.bad_layout", layout=value, allowed=", ".join(LAYOUT_NAMES)))
+    return name
+
+
 def run(args: argparse.Namespace) -> None:
     """Run either model download, GUI worker, or recognition."""
     set_ui_lang(getattr(args, "ui", get_ui_lang()))
@@ -174,6 +196,7 @@ def run(args: argparse.Namespace) -> None:
         return
 
     engine_name = normalize_engine(getattr(args, "engine", DEFAULT_ENGINE))
+    layout = normalize_layout(getattr(args, "layout", DEFAULT_LAYOUT))
 
     if args.worker:
         if args.images:
@@ -204,6 +227,7 @@ def run(args: argparse.Namespace) -> None:
                     image_path,
                     preprocess_image=not args.no_preprocess,
                     invert=bool(args.invert),
+                    layout=layout,
                 )
             )
 
@@ -217,6 +241,7 @@ def run(args: argparse.Namespace) -> None:
             spell=spell,
             fix_caps=fix_caps,
             strip_junk=strip_junk,
+            layout=layout,
         )
         return
 
@@ -225,6 +250,7 @@ def run(args: argparse.Namespace) -> None:
         spell=spell,
         fix_caps=fix_caps,
         strip_junk=strip_junk,
+        layout=layout,
     )
     save_text(args.output, text)
     print_result(text, args.output)
@@ -253,6 +279,7 @@ def write_per_file_results(
     spell: bool = True,
     fix_caps: bool = True,
     strip_junk: bool = False,
+    layout: str = DEFAULT_LAYOUT,
 ) -> None:
     """Write document.png -> document.txt next to each input."""
     if not documents:
@@ -265,6 +292,7 @@ def write_per_file_results(
             spell=spell,
             fix_caps=fix_caps,
             strip_junk=strip_junk,
+            layout=layout,
         )
         save_text(output, text)
         print(f"{document.path.name} -> {output}")
@@ -357,6 +385,7 @@ def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
     spell = bool(request.get("spell", True))
     fix_caps = bool(request.get("fix_caps", True))
     strip_junk = bool(request.get("strip_junk", False))
+    layout = normalize_layout(str(request.get("layout") or DEFAULT_LAYOUT))
 
     for image_path in images:
         ensure_supported_image(image_path)
@@ -388,6 +417,7 @@ def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
                 image_path,
                 preprocess_image=not no_preprocess,
                 invert=invert,
+                layout=layout,
                 on_row=emit_line,
                 on_rows=emit_rows,
             )
@@ -400,6 +430,7 @@ def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
             spell=spell,
             fix_caps=fix_caps,
             strip_junk=strip_junk,
+            layout=layout,
         )
         return
 
@@ -408,6 +439,7 @@ def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
         spell=spell,
         fix_caps=fix_caps,
         strip_junk=strip_junk,
+        layout=layout,
     )
     save_text(output, text)
     if debug:
@@ -436,6 +468,7 @@ def recognize_file(
     *,
     preprocess_image: bool,
     invert: bool = False,
+    layout: str = DEFAULT_LAYOUT,
     on_row: Optional[Callable[[str], None]] = None,
     on_rows: Optional[Callable[[int], None]] = None,
 ) -> RecognizedDocument:
@@ -445,6 +478,7 @@ def recognize_file(
     on_row is called after each row is recognized (may be empty).
     `engine` is an OcrBackend (EasyOCR or Tesseract).
     """
+    layout_name = normalize_layout(layout)
     image = load_image(path)
     if invert:
         image = invert_image(image)
@@ -455,6 +489,7 @@ def recognize_file(
     lines = engine.recognize(
         prepared,
         path,
+        layout=layout_name,
         on_row=on_row,
         on_rows=on_rows,
     )
@@ -555,10 +590,12 @@ def read_lines(
     image: np.ndarray,
     path: Path,
     *,
+    layout: str = DEFAULT_LAYOUT,
     on_row: Optional[Callable[[str], None]] = None,
     on_rows: Optional[Callable[[int], None]] = None,
 ) -> list[TextLine]:
     """Detect once, recognize row by row, optionally stream each row via on_row."""
+    layout_name = normalize_layout(layout)
     try:
         with silence_library_noise():
             from easyocr.utils import reformat_input
@@ -573,7 +610,7 @@ def read_lines(
                     on_rows(0)
                 return []
 
-            rows = group_lines_into_rows(placeholders)
+            rows = group_lines_into_rows(placeholders, layout=layout_name)
             if on_rows is not None:
                 on_rows(len(rows))
             lines: list[TextLine] = []
@@ -866,7 +903,12 @@ def nearest_horizontal_gap(row: Sequence[FlatBox], candidate: FlatBox) -> float:
     return min(gaps) if gaps else 0.0
 
 
-def adaptive_center_y_limit(median_h: float, candidate: FlatBox) -> float:
+def adaptive_center_y_limit(
+    median_h: float,
+    candidate: FlatBox,
+    *,
+    layout: str = DEFAULT_LAYOUT,
+) -> float:
     """Tighter center allowance for short/dense boxes; looser for tall ones."""
     base = MAX_CENTER_Y_RATIO * median_h
     # Estimated leading ~0.35–0.5 of glyph height on dense A4 photos.
@@ -874,24 +916,48 @@ def adaptive_center_y_limit(median_h: float, candidate: FlatBox) -> float:
     limit = min(base, 0.55 * estimated_gap + 0.2 * median_h)
     if candidate.height < 0.85 * median_h:
         limit = min(limit, 0.28 * median_h)
+    if layout == LAYOUT_PLAIN:
+        limit = min(limit, 0.30 * median_h)
     return max(0.15 * median_h, limit)
 
 
-def fits_text_row(row: Sequence[FlatBox], candidate: FlatBox) -> bool:
+def plain_max_horizontal_gap(row: Sequence[FlatBox]) -> float:
+    """Typical prose inter-word gap; larger gaps start a new visual line."""
+    median_h = row_median_height(row)
+    return max(
+        PLAIN_MAX_GAP_HEIGHT_RATIO * median_h,
+        PLAIN_MAX_GAP_WIDTH_RATIO * row_median_width(row),
+    )
+
+
+def fits_text_row(
+    row: Sequence[FlatBox],
+    candidate: FlatBox,
+    *,
+    layout: str = DEFAULT_LAYOUT,
+) -> bool:
     """True when candidate belongs on this visual text line.
 
-    Strong vertical overlap may join table cells across a wide X gap.
-    Center-only fallback requires horizontal proximity so a right-column
-    word does not attach to a left-column row with a similar center_y.
+    plain (default): tight Y only — X gaps are split after L→R sort.
+    table: strong vertical overlap may join cells across a wide X gap.
     """
+    layout_name = normalize_layout(layout)
     best_overlap = max(vertical_overlap_ratio(item, candidate) for item in row)
     median_h = row_median_height(row)
     center_gap = abs(row_mean_center_y(row) - candidate.center_y)
+    center_limit = adaptive_center_y_limit(median_h, candidate, layout=layout_name)
+
+    if layout_name == LAYOUT_PLAIN:
+        if best_overlap >= MIN_VERTICAL_OVERLAP_RATIO:
+            return center_gap <= PLAIN_STRONG_CENTER_RATIO * median_h
+        if center_gap > center_limit:
+            return False
+        return best_overlap >= 0.15
 
     if best_overlap >= MIN_VERTICAL_OVERLAP_RATIO:
-        return center_gap <= max(median_h, adaptive_center_y_limit(median_h, candidate) * 2.0)
+        return center_gap <= max(median_h, center_limit * 2.0)
 
-    if center_gap > adaptive_center_y_limit(median_h, candidate):
+    if center_gap > center_limit:
         return False
     # Weak Y evidence: refuse large column-like X gaps.
     gap_x = nearest_horizontal_gap(row, candidate)
@@ -901,18 +967,40 @@ def fits_text_row(row: Sequence[FlatBox], candidate: FlatBox) -> bool:
     return best_overlap >= 0.15
 
 
-def _cluster_flat_into_rows(flat: Sequence[FlatBox]) -> list[list[FlatBox]]:
+def split_plain_row_on_x_gaps(row: Sequence[FlatBox]) -> list[list[FlatBox]]:
+    """Break a Y-clustered row wherever consecutive words are too far apart."""
+    if len(row) <= 1:
+        return [list(row)]
+    ordered = sorted(row, key=lambda item: item.left)
+    max_gap = plain_max_horizontal_gap(ordered)
+    parts: list[list[FlatBox]] = [[ordered[0]]]
+    for item in ordered[1:]:
+        gap = item.left - parts[-1][-1].right
+        if gap > max_gap:
+            parts.append([item])
+        else:
+            parts[-1].append(item)
+    return parts
+
+
+def _cluster_flat_into_rows(
+    flat: Sequence[FlatBox],
+    *,
+    layout: str = DEFAULT_LAYOUT,
+) -> list[list[FlatBox]]:
+    layout_name = normalize_layout(layout)
     ordered = sorted(flat, key=lambda item: (item.center_y, item.left))
     rows: list[list[FlatBox]] = []
     for item in ordered:
         best_index = -1
         best_score = -1.0
         for index, row in enumerate(rows):
-            if not fits_text_row(row, item):
+            if not fits_text_row(row, item, layout=layout_name):
                 continue
             score = max(vertical_overlap_ratio(existing, item) for existing in row)
             score += 1.0 / (1.0 + abs(row_mean_center_y(row) - item.center_y))
-            score += 1.0 / (1.0 + nearest_horizontal_gap(row, item))
+            if layout_name == LAYOUT_TABLE:
+                score += 1.0 / (1.0 + nearest_horizontal_gap(row, item))
             if score > best_score:
                 best_score = score
                 best_index = index
@@ -920,7 +1008,13 @@ def _cluster_flat_into_rows(flat: Sequence[FlatBox]) -> list[list[FlatBox]]:
             rows.append([item])
         else:
             rows[best_index].append(item)
-    return [sorted(row, key=lambda item: item.left) for row in rows]
+    sorted_rows = [sorted(row, key=lambda item: item.left) for row in rows]
+    if layout_name != LAYOUT_PLAIN:
+        return sorted_rows
+    split: list[list[FlatBox]] = []
+    for row in sorted_rows:
+        split.extend(split_plain_row_on_x_gaps(row))
+    return split
 
 
 def split_column_bands(flat: Sequence[FlatBox]) -> list[list[FlatBox]]:
@@ -947,11 +1041,16 @@ def split_column_bands(flat: Sequence[FlatBox]) -> list[list[FlatBox]]:
     return [list(flat)]
 
 
-def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
+def group_lines_into_rows(
+    lines: Sequence[TextLine],
+    *,
+    layout: str = DEFAULT_LAYOUT,
+) -> list[list[TextLine]]:
     """Cluster word boxes by vertical overlap after undoing page skew."""
     if not lines:
         return []
 
+    layout_name = normalize_layout(layout)
     skew = estimate_page_skew_degrees(lines)
     origin_x = sum(sum(x for x, _y in item.box) for item in lines) / float(
         4 * len(lines)
@@ -973,7 +1072,7 @@ def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
 
     rows: list[list[FlatBox]] = []
     for band in split_column_bands(flat):
-        rows.extend(_cluster_flat_into_rows(band))
+        rows.extend(_cluster_flat_into_rows(band, layout=layout_name))
 
     rows.sort(key=row_mean_center_y)
     return [[item.line for item in row] for row in rows]
@@ -985,6 +1084,7 @@ def render_documents(
     spell: bool = True,
     fix_caps: bool = True,
     strip_junk: bool = False,
+    layout: str = DEFAULT_LAYOUT,
 ) -> str:
     """One file: plain text. Several files: name headers between blocks."""
     if len(documents) == 1:
@@ -993,11 +1093,12 @@ def render_documents(
             spell=spell,
             fix_caps=fix_caps,
             strip_junk=strip_junk,
+            layout=layout,
         )
 
     blocks = [
         f"=== {document.path.name} ===\n"
-        f"{document_text(document, spell=spell, fix_caps=fix_caps, strip_junk=strip_junk)}"
+        f"{document_text(document, spell=spell, fix_caps=fix_caps, strip_junk=strip_junk, layout=layout)}"
         for document in documents
     ]
     return "\n\n".join(blocks)
@@ -1009,9 +1110,10 @@ def document_text(
     spell: bool = True,
     fix_caps: bool = True,
     strip_junk: bool = False,
+    layout: str = DEFAULT_LAYOUT,
 ) -> str:
     """Join words on the same visual row with spaces; rows with newlines."""
-    rows = group_lines_into_rows(document.lines)
+    rows = group_lines_into_rows(document.lines, layout=layout)
     rendered = [
         " ".join(part.text for part in row if part.text)
         for row in rows

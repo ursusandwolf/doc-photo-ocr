@@ -55,6 +55,7 @@ class OcrBackend(Protocol):
         image: np.ndarray,
         path: Any,
         *,
+        layout: str = "plain",
         on_row: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
     ) -> list[Any]:
@@ -188,14 +189,19 @@ def parse_tesseract_data(data: dict[str, Any]) -> list[Any]:
     return lines
 
 
-def group_tesseract_native_rows(data: dict[str, Any]) -> list[list[Any]]:
+def group_tesseract_native_rows(
+    data: dict[str, Any],
+    *,
+    layout: str = "plain",
+) -> list[list[Any]]:
     """Seed rows from Tesseract block/par/line ids, then refine with overlap clustering.
 
     Native line_num keeps table cells on the correct visual line. If Tesseract
     exposes only a single line id, fall back to geometry-only grouping.
     """
-    from ocr import box_left, group_lines_into_rows
+    from ocr import box_left, group_lines_into_rows, normalize_layout
 
+    layout_name = normalize_layout(layout)
     texts = data.get("text") or []
     buckets: dict[tuple[int, int, int], list[Any]] = {}
     order: list[tuple[int, int, int]] = []
@@ -220,13 +226,13 @@ def group_tesseract_native_rows(data: dict[str, Any]) -> list[list[Any]]:
     native = [buckets[key] for key in order]
     if len(native) == 1:
         # No useful line structure — geometry clustering only.
-        return group_lines_into_rows(native[0])
+        return group_lines_into_rows(native[0], layout=layout_name)
 
     # Refine: merge adjacent native lines that geometry says are one row.
     merged: list[list[Any]] = [list(native[0])]
     for row in native[1:]:
         trial = merged[-1] + list(row)
-        regrouped = group_lines_into_rows(trial)
+        regrouped = group_lines_into_rows(trial, layout=layout_name)
         if len(regrouped) == 1:
             merged[-1].extend(row)
         else:
@@ -257,6 +263,7 @@ class EasyOcrEngine:
         image: np.ndarray,
         path: Any,
         *,
+        layout: str = "plain",
         on_row: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
     ) -> list[Any]:
@@ -269,6 +276,7 @@ class EasyOcrEngine:
             self._reader,
             image,
             path,
+            layout=layout,
             on_row=on_row,
             on_rows=on_rows,
         )
@@ -291,6 +299,7 @@ class TesseractEngine:
         image: np.ndarray,
         path: Any,
         *,
+        layout: str = "plain",
         on_row: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
     ) -> list[Any]:
@@ -309,7 +318,7 @@ class TesseractEngine:
                 lang=self._lang,
                 output_type=pytesseract.Output.DICT,
             )
-            rows = group_tesseract_native_rows(data)
+            rows = group_tesseract_native_rows(data, layout=layout)
             if not rows:
                 if on_rows is not None:
                     on_rows(0)

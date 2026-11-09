@@ -41,6 +41,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 - Drag-and-drop (after `windnd` install), file/folder pickers, **Ctrl+V** clipboard image paste.
 - Copy result to clipboard; open result file.
 - Engine combo: `easyocr` (default) or `tesseract` (restarts the OCR worker; prompts to install if missing).
+- Layout combo: `plain` (default prose, word-by-word / line-by-line) or `table` (wide cell gaps).
 - RU/EN UI; light / gray / dark themes (prefs saved locally).
 - Post-process toggles: spelling, odd caps, junk strip (off by default), invert colors.
 - Progress for model warm-up and recognition; long-lived OCR worker so EasyOCR stays in memory.
@@ -48,7 +49,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 ### CLI
 
 - Batch: files, folders, `--per-file`, `--recursive`.
-- `--engine easyocr|tesseract`, `--lang`, `--ui`, `--invert`, `--no-preprocess`, spell/caps/junk flags, `--debug`.
+- `--engine easyocr|tesseract`, `--layout plain|table`, `--lang`, `--ui`, `--invert`, `--no-preprocess`, spell/caps/junk flags, `--debug`.
 - Formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` (Cyrillic paths OK).
 
 ### Engines and polish
@@ -80,7 +81,7 @@ flowchart LR
 
 1. [`preprocess.py`](preprocess.py) — alignment/contrast (disable with `--no-preprocess`).
 2. **Detect** (CRAFT) — text boxes on the page.
-3. Boxes are clustered into rows ([`group_lines_into_rows`](ocr.py)): page skew + residual tilt, column gutters, adaptive overlap; Tesseract seeds from native `line_num` then refines the same way.
+3. Boxes are clustered into rows ([`group_lines_into_rows`](ocr.py)): `--layout plain` (default) keeps near-X neighbors only; `table` allows wide cell gaps. Page skew + residual tilt, column gutters; Tesseract seeds from native `line_num` then refines the same way.
 4. **Recognize** (CRNN) — text per row (L→R sort; debug log if order changed).
 5. Post-process in [`spellcheck.py`](spellcheck.py).
 

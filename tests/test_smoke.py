@@ -109,7 +109,7 @@ class EngineSmokeTests(unittest.TestCase):
             "par_num": [1, 1, 1],
             "line_num": [1, 2, 3],
         }
-        rows = group_tesseract_native_rows(data)
+        rows = group_tesseract_native_rows(data, layout="table")
         self.assertEqual(len(rows), 1)
         self.assertEqual([part.text for part in rows[0]], ["Кол-во", "2", "Цена"])
 
@@ -396,8 +396,49 @@ class TextLayoutSmokeTests(unittest.TestCase):
             ocr.TextLine("Цена", 0.9, ((350, 100), (420, 100), (420, 130), (350, 130))),
             ocr.TextLine("100", 0.9, ((500, 101), (560, 101), (560, 129), (500, 129))),
         )
-        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines), spell=False)
+        text = ocr.document_text(
+            ocr.RecognizedDocument(Path("x.png"), lines),
+            spell=False,
+            layout=ocr.LAYOUT_TABLE,
+        )
         self.assertEqual(text.splitlines()[0], "Кол-во 2 Цена 100")
+
+    def test_plain_rejects_wide_x_gap_on_same_baseline(self) -> None:
+        # Prose mode must not zigzag-join distant cells that share a baseline.
+        lines = (
+            ocr.TextLine("Кол-во", 0.9, ((10, 100), (90, 100), (90, 130), (10, 130))),
+            ocr.TextLine("2", 0.9, ((200, 102), (230, 102), (230, 128), (200, 128))),
+            ocr.TextLine("Цена", 0.9, ((350, 100), (420, 100), (420, 130), (350, 130))),
+            ocr.TextLine("100", 0.9, ((500, 101), (560, 101), (560, 129), (500, 129))),
+        )
+        text = ocr.document_text(
+            ocr.RecognizedDocument(Path("x.png"), lines),
+            spell=False,
+            layout=ocr.LAYOUT_PLAIN,
+        )
+        self.assertNotEqual(text.splitlines()[0], "Кол-во 2 Цена 100")
+        self.assertTrue(text.splitlines()[0].startswith("Кол-во"))
+
+    def test_plain_keeps_partial_overlap_rows_apart(self) -> None:
+        # Dense leading: bottom of row1 overlaps top of row2 — still two lines.
+        lines = (
+            ocr.TextLine("Первая", 0.9, ((10, 100), (100, 100), (100, 130), (10, 130))),
+            ocr.TextLine("строка", 0.9, ((110, 102), (200, 102), (200, 132), (110, 132))),
+            ocr.TextLine("Вторая", 0.9, ((10, 124), (100, 124), (100, 154), (10, 154))),
+            ocr.TextLine("ниже", 0.9, ((110, 126), (180, 126), (180, 156), (110, 156))),
+        )
+        text = ocr.document_text(
+            ocr.RecognizedDocument(Path("x.png"), lines),
+            spell=False,
+            layout=ocr.LAYOUT_PLAIN,
+        )
+        self.assertEqual(text, "Первая строка\nВторая ниже")
+
+    def test_normalize_layout(self) -> None:
+        self.assertEqual(ocr.normalize_layout("PLAIN"), ocr.LAYOUT_PLAIN)
+        self.assertEqual(ocr.normalize_layout("table"), ocr.LAYOUT_TABLE)
+        with self.assertRaises(ocr.OcrError):
+            ocr.normalize_layout("zigzag")
 
     def test_two_column_bands_cluster_separately(self) -> None:
         lines = (
@@ -433,12 +474,13 @@ class TextLayoutSmokeTests(unittest.TestCase):
 
     def test_residual_skew_keeps_sloped_row_together(self) -> None:
         # Centers rise ~5° left→right; without residual pass they can split.
+        # Keep inter-word X gaps within plain prose limits.
         lines = (
             ocr.TextLine("One", 0.9, ((10, 100), (90, 100), (90, 128), (10, 128))),
-            ocr.TextLine("Two", 0.9, ((200, 116), (280, 116), (280, 144), (200, 144))),
-            ocr.TextLine("Three", 0.9, ((390, 133), (490, 133), (490, 161), (390, 161))),
+            ocr.TextLine("Two", 0.9, ((100, 108), (180, 108), (180, 136), (100, 136))),
+            ocr.TextLine("Three", 0.9, ((190, 116), (290, 116), (290, 144), (190, 144))),
         )
-        rows = ocr.group_lines_into_rows(lines)
+        rows = ocr.group_lines_into_rows(lines, layout=ocr.LAYOUT_PLAIN)
         self.assertEqual(len(rows), 1)
         self.assertEqual([part.text for part in rows[0]], ["One", "Two", "Three"])
 
