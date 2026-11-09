@@ -16,6 +16,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -37,8 +38,6 @@ UI_PREF_FILE = APP_DIR / "ui_lang.txt"
 MIN_PYTHON = (3, 9)
 TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
 _LIBS_READY_CACHE: Optional[bool] = None
-SPINNER_FRAMES = "|/-\\"
-
 
 class OcrEngine:
     """Long-lived `ocr.py --worker` process with EasyOCR already loaded."""
@@ -99,8 +98,11 @@ class OcrEngine:
         *,
         ui: str,
         spell: bool = True,
+        fix_caps: bool = True,
+        strip_junk: bool = True,
         on_file: Callable[[int, int, str], None],
         on_line: Optional[Callable[[str], None]] = None,
+        on_rows: Optional[Callable[[int], None]] = None,
     ) -> None:
         if not self.ready or self._process is None:
             raise RuntimeError(t("gui.engine_not_ready"))
@@ -113,6 +115,8 @@ class OcrEngine:
             "output": str(output),
             "ui": ui,
             "spell": spell,
+            "fix_caps": fix_caps,
+            "strip_junk": strip_junk,
         }
         with self._lock:
             self._process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
@@ -126,6 +130,12 @@ class OcrEngine:
                     payload = line[len("##FILE ") :].strip()
                     current, total, path = parse_file_progress(payload)
                     on_file(current, total, path)
+                elif line.startswith("##ROWS "):
+                    if on_rows is not None:
+                        try:
+                            on_rows(int(line[len("##ROWS ") :].strip()))
+                        except ValueError:
+                            on_rows(0)
                 elif line.startswith("##LINE "):
                     if on_line is not None:
                         on_line(line[len("##LINE ") :])
@@ -187,6 +197,8 @@ class App(tk.Tk):
         self.base_python: Optional[Path] = None
         self.output_path = tk.StringVar(value=str(DEFAULT_OUTPUT))
         self.spell_enabled = tk.BooleanVar(value=True)
+        self.fix_caps_enabled = tk.BooleanVar(value=True)
+        self.strip_junk_enabled = tk.BooleanVar(value=True)
         self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.status_python = tk.StringVar()
         self.status_libs = tk.StringVar()
@@ -200,7 +212,9 @@ class App(tk.Tk):
         self._wait_animating = False
         self._wait_message_key = "gui.wait_ocr"
         self._wait_detail = ""
-        self._spin_index = 0
+        self._wait_started_at = 0.0
+        self._row_done = 0
+        self._row_total = 0
         self._last_result: Optional[Path] = None
         self._last_task_key: Optional[str] = None
         # Drop callback runs inside a Win32 WndProc — never call Tk from there.
@@ -272,6 +286,16 @@ class App(tk.Tk):
             variable=self.spell_enabled,
         )
         self.spell_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.fix_caps_check = ttk.Checkbutton(
+            buttons,
+            variable=self.fix_caps_enabled,
+        )
+        self.fix_caps_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.strip_junk_check = ttk.Checkbutton(
+            buttons,
+            variable=self.strip_junk_enabled,
+        )
+        self.strip_junk_check.pack(side=tk.LEFT, padx=(12, 0))
 
         out = ttk.Frame(self.root_frame)
         out.pack(fill=tk.X, pady=4)
@@ -323,6 +347,8 @@ class App(tk.Tk):
         self.btn_file.configure(text=t("gui.pick_file"))
         self.btn_folder.configure(text=t("gui.pick_folder"))
         self.spell_check.configure(text=t("gui.spell"))
+        self.fix_caps_check.configure(text=t("gui.fix_caps"))
+        self.strip_junk_check.configure(text=t("gui.strip_junk"))
         self.result_label.configure(text=t("gui.result"))
         self.btn_open.configure(text=t("gui.open"))
         self.log_frame.configure(text=t("gui.log"))
@@ -554,7 +580,7 @@ class App(tk.Tk):
     def _on_worker_done(self, title_key: str) -> None:
         self._busy = False
         if title_key == "gui.task_ocr":
-            self._stop_wait_animation()
+            self._stop_wait_timer()
             self._set_progress(1, 1)
         title = t(title_key)
         self.append_log(t("gui.done", title=title))
@@ -568,7 +594,7 @@ class App(tk.Tk):
     def _on_worker_error(self, title_key: str, error: Exception) -> None:
         self._busy = False
         if title_key in {"gui.task_ocr", "gui.task_models"}:
-            self._stop_wait_animation()
+            self._stop_wait_timer()
             self._reset_progress()
         title = t(title_key)
         self.append_log(t("gui.error", title=title, error=error))
@@ -648,70 +674,101 @@ class App(tk.Tk):
             raise RuntimeError(t("gui.engine_not_ready"))
 
         total = len(images)
-        self.after(0, lambda: self._start_wait_animation("gui.wait_ocr"))
+        self.after(0, lambda: self._start_wait_timer("gui.wait_ocr"))
         self._log_threadsafe(t("gui.files_count", count=total))
 
         def on_file(current: int, max_count: int, path: str) -> None:
             self._log_threadsafe(path)
             detail = t("gui.progress_file", current=current, total=max_count)
             self.after(0, lambda text=detail: self._set_wait_detail(text))
+            self.after(0, self._reset_row_progress)
+
+        def on_rows(count: int) -> None:
+            self.after(0, lambda n=count: self._begin_row_progress(n))
 
         def on_line(text: str) -> None:
             if text:
                 self._log_threadsafe(text)
+            self.after(0, self._advance_row_progress)
 
         self._engine.recognize(
             images,
             output,
             ui=get_ui_lang(),
             spell=bool(self.spell_enabled.get()),
+            fix_caps=bool(self.fix_caps_enabled.get()),
+            strip_junk=bool(self.strip_junk_enabled.get()),
             on_file=on_file,
             on_line=on_line,
+            on_rows=on_rows,
         )
         self._last_result = output
         self.after(0, lambda: self.btn_open.configure(state=tk.NORMAL))
         self._log_threadsafe(t("gui.saved", path=output))
 
-    def _start_wait_animation(self, message_key: str) -> None:
-        """Indeterminate bar + spinning slash while a long OCR job runs."""
-        self._stop_wait_animation()
+    def _start_wait_timer(self, message_key: str) -> None:
+        """Red wait label + elapsed clock; determinate bar stays calm (no pulse)."""
+        self._stop_wait_timer()
         self._wait_animating = True
         self._wait_message_key = message_key
         self._wait_detail = ""
-        self._spin_index = 0
+        self._wait_started_at = time.monotonic()
+        self._row_done = 0
+        self._row_total = 0
         self.progress_label.configure(style="Wait.TLabel")
-        self.progress_bar.configure(mode="indeterminate")
-        self.progress_bar.start(12)
-        self._tick_wait_animation()
+        self.progress_bar.configure(mode="determinate", maximum=1)
+        self.progress_value.set(0)
+        self._tick_wait_timer()
 
     def _set_wait_detail(self, detail: str) -> None:
         self._wait_detail = detail
 
-    def _tick_wait_animation(self) -> None:
+    def _reset_row_progress(self) -> None:
+        self._row_done = 0
+        self._row_total = 0
+        self.progress_bar.configure(mode="determinate", maximum=1)
+        self.progress_value.set(0)
+
+    def _begin_row_progress(self, total: int) -> None:
+        self._row_total = max(0, int(total))
+        self._row_done = 0
+        maximum = max(1, self._row_total)
+        self.progress_bar.configure(mode="determinate", maximum=maximum)
+        self.progress_value.set(0)
+
+    def _advance_row_progress(self) -> None:
+        if self._row_total <= 0:
+            return
+        self._row_done = min(self._row_total, self._row_done + 1)
+        self.progress_value.set(self._row_done)
+
+    def _tick_wait_timer(self) -> None:
         if not self._wait_animating:
             return
-        frame = SPINNER_FRAMES[self._spin_index % len(SPINNER_FRAMES)]
-        self._spin_index += 1
+        elapsed = int(max(0.0, time.monotonic() - self._wait_started_at))
+        minutes, seconds = divmod(elapsed, 60)
+        clock = f"{minutes}:{seconds:02d}"
         base = t(self._wait_message_key)
-        if self._wait_detail:
-            self.progress_text.set(f"{base} {self._wait_detail} {frame}")
+        if self._row_total > 0:
+            rows = t(
+                "gui.progress_file",
+                current=self._row_done,
+                total=self._row_total,
+            )
+            self.progress_text.set(f"{base} {rows} · {clock}")
+        elif self._wait_detail:
+            self.progress_text.set(f"{base} {self._wait_detail} · {clock}")
         else:
-            self.progress_text.set(f"{base} {frame}")
-        self.after(120, self._tick_wait_animation)
+            self.progress_text.set(f"{base} · {clock}")
+        self.after(1000, self._tick_wait_timer)
 
-    def _stop_wait_animation(self) -> None:
-        if self._wait_animating:
-            self._wait_animating = False
-            try:
-                self.progress_bar.stop()
-            except tk.TclError:
-                pass
+    def _stop_wait_timer(self) -> None:
         self._wait_animating = False
         self.progress_label.configure(style="TLabel")
         self.progress_bar.configure(mode="determinate")
 
     def _set_progress(self, value: float, maximum: int) -> None:
-        self._stop_wait_animation()
+        self._stop_wait_timer()
         maximum = max(1, int(maximum))
         self.progress_bar.configure(mode="determinate", maximum=maximum)
         self.progress_value.set(value)
@@ -720,7 +777,7 @@ class App(tk.Tk):
         )
 
     def _reset_progress(self) -> None:
-        self._stop_wait_animation()
+        self._stop_wait_timer()
         self.progress_bar.configure(mode="determinate", maximum=1)
         self.progress_value.set(0)
         self.progress_text.set(t("gui.progress"))

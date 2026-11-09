@@ -176,6 +176,48 @@ class SpellcheckSmokeTests(unittest.TestCase):
         self.assertIn("15.07.2025", fixed)
         self.assertIn("HR-2025-078", fixed)
 
+    def test_fixes_unexpected_caps_in_lowercase_words(self) -> None:
+        text = "согласно графику отпусков на 2025 гОД-"
+        fixed = spellcheck.correct_text(
+            text,
+            spell=False,
+            fix_caps=True,
+            strip_junk=False,
+        )
+        self.assertIn("год-", fixed)
+        self.assertNotIn("гОД", fixed)
+        self.assertEqual(
+            spellcheck.correct_text(
+                text,
+                spell=False,
+                fix_caps=False,
+                strip_junk=False,
+            ),
+            text,
+        )
+        self.assertFalse(spellcheck.has_unexpected_caps("ЗАЯВЛЕНИЕ"))
+        self.assertFalse(spellcheck.has_unexpected_caps("Петрова"))
+        self.assertTrue(spellcheck.has_unexpected_caps("гОД"))
+
+    def test_strips_junk_characters(self) -> None:
+        text = "Директору <Северторг ~? отдел\nгод-"
+        fixed = spellcheck.correct_text(
+            text,
+            spell=False,
+            fix_caps=False,
+            strip_junk=True,
+        )
+        self.assertEqual(fixed, "Директору Северторг отдел\nгод")
+        self.assertNotIn("<", fixed)
+        self.assertNotIn("~", fixed)
+        cluster = spellcheck.strip_junk_text('текст !"№;%::?*( ~`:;"|/\\? хвост')
+        self.assertEqual(cluster, "текст хвост")
+        self.assertEqual(spellcheck.strip_junk_text("таб. № 1042"), "таб. № 1042")
+        self.assertEqual(spellcheck.strip_junk_text("100%"), "100%")
+        self.assertEqual(spellcheck.strip_junk_text("что?"), "что?")
+        self.assertEqual(spellcheck.strip_junk_text("а: б; в!"), "а: б; в!")
+        self.assertEqual(spellcheck.strip_junk_text("a  ~  b"), "a b")
+
     def test_document_text_respects_no_spell(self) -> None:
         lines = (
             ocr.TextLine(
@@ -236,15 +278,19 @@ class OfflineOcrSmokeTests(unittest.TestCase):
             self.skipTest("fixture missing")
         reader = ocr.create_reader(["ru", "en"], allow_download=False)
         streamed: list[str] = []
+        row_counts: list[int] = []
         document = ocr.recognize_file(
             reader,
             image_path,
             preprocess_image=True,
             on_row=streamed.append,
+            on_rows=row_counts.append,
         )
         final = ocr.document_text(document)
-        self.assertGreaterEqual(len(streamed), 3)
-        self.assertTrue(any("Прошу" in row for row in streamed))
+        self.assertEqual(row_counts, [len(streamed)])
+        non_empty = [row for row in streamed if row]
+        self.assertGreaterEqual(len(non_empty), 3)
+        self.assertTrue(any("Прошу" in row for row in non_empty))
         self.assertIn("Прошу предоставить", final)
 
     def _make_temp_image(self) -> Path:

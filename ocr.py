@@ -105,6 +105,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help=t("cli.no_spell_help"),
     )
     parser.add_argument(
+        "--no-fix-caps",
+        action="store_true",
+        help=t("cli.no_fix_caps_help"),
+    )
+    parser.add_argument(
+        "--no-strip-junk",
+        action="store_true",
+        help=t("cli.no_strip_junk_help"),
+    )
+    parser.add_argument(
         "--download-models",
         action="store_true",
         help=t("cli.download_help"),
@@ -176,11 +186,24 @@ def run(args: argparse.Namespace) -> None:
         )
 
     spell = not args.no_spell
+    fix_caps = not args.no_fix_caps
+    strip_junk = not args.no_strip_junk
     if args.per_file:
-        write_per_file_results(documents, debug=args.debug, spell=spell)
+        write_per_file_results(
+            documents,
+            debug=args.debug,
+            spell=spell,
+            fix_caps=fix_caps,
+            strip_junk=strip_junk,
+        )
         return
 
-    text = render_documents(documents, spell=spell)
+    text = render_documents(
+        documents,
+        spell=spell,
+        fix_caps=fix_caps,
+        strip_junk=strip_junk,
+    )
     save_text(args.output, text)
     print_result(text, args.output)
 
@@ -206,6 +229,8 @@ def write_per_file_results(
     *,
     debug: bool,
     spell: bool = True,
+    fix_caps: bool = True,
+    strip_junk: bool = True,
 ) -> None:
     """Write document.png -> document.txt next to each input."""
     if not documents:
@@ -213,7 +238,12 @@ def write_per_file_results(
 
     for document in documents:
         output = document.path.with_suffix(".txt")
-        text = document_text(document, spell=spell)
+        text = document_text(
+            document,
+            spell=spell,
+            fix_caps=fix_caps,
+            strip_junk=strip_junk,
+        )
         save_text(output, text)
         print(f"{document.path.name} -> {output}")
         if debug:
@@ -290,12 +320,26 @@ def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
     debug = bool(request.get("debug", False))
     per_file = bool(request.get("per_file", False))
     spell = bool(request.get("spell", True))
+    fix_caps = bool(request.get("fix_caps", True))
+    strip_junk = bool(request.get("strip_junk", True))
 
     for image_path in images:
         ensure_supported_image(image_path)
 
     def emit_line(text: str) -> None:
-        emit_worker("LINE", correct_text(text) if spell else text)
+        if text and (spell or fix_caps or strip_junk):
+            payload = correct_text(
+                text,
+                spell=spell,
+                fix_caps=fix_caps,
+                strip_junk=strip_junk,
+            )
+        else:
+            payload = text
+        emit_worker("LINE", payload)
+
+    def emit_rows(count: int) -> None:
+        emit_worker("ROWS", str(count))
 
     emit_worker("FILES", str(len(images)))
     documents: list[RecognizedDocument] = []
@@ -307,14 +351,26 @@ def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
                 image_path,
                 preprocess_image=not no_preprocess,
                 on_row=emit_line,
+                on_rows=emit_rows,
             )
         )
 
     if per_file:
-        write_per_file_results(documents, debug=debug, spell=spell)
+        write_per_file_results(
+            documents,
+            debug=debug,
+            spell=spell,
+            fix_caps=fix_caps,
+            strip_junk=strip_junk,
+        )
         return
 
-    text = render_documents(documents, spell=spell)
+    text = render_documents(
+        documents,
+        spell=spell,
+        fix_caps=fix_caps,
+        strip_junk=strip_junk,
+    )
     save_text(output, text)
     if debug:
         save_text(debug_output_path(output), render_debug(documents))
@@ -342,17 +398,25 @@ def recognize_file(
     *,
     preprocess_image: bool,
     on_row: Optional[Callable[[str], None]] = None,
+    on_rows: Optional[Callable[[int], None]] = None,
 ) -> RecognizedDocument:
     """Read one file and return word boxes in reading order.
 
-    on_row is called with each visual text row as soon as that row is recognized.
+    on_rows is called once with the number of visual rows after detection.
+    on_row is called after each row is recognized (may be empty).
     """
     image = load_image(path)
     try:
         prepared = preprocess(image) if preprocess_image else image
     except cv2.error as error:
         raise OcrError(t("err.preprocess", name=path.name, error=error)) from error
-    lines = read_lines(reader, prepared, path, on_row=on_row)
+    lines = read_lines(
+        reader,
+        prepared,
+        path,
+        on_row=on_row,
+        on_rows=on_rows,
+    )
     return RecognizedDocument(path=path, lines=tuple(lines))
 
 
@@ -451,6 +515,7 @@ def read_lines(
     path: Path,
     *,
     on_row: Optional[Callable[[str], None]] = None,
+    on_rows: Optional[Callable[[int], None]] = None,
 ) -> list[TextLine]:
     """Detect once, recognize row by row, optionally stream each row via on_row."""
     try:
@@ -463,9 +528,13 @@ def read_lines(
             horizontal_list, free_list = horizontal_list[0], free_list[0]
             placeholders = detection_placeholders(horizontal_list, free_list)
             if not placeholders:
+                if on_rows is not None:
+                    on_rows(0)
                 return []
 
             rows = group_lines_into_rows(placeholders)
+            if on_rows is not None:
+                on_rows(len(rows))
             lines: list[TextLine] = []
             for row in rows:
                 free_boxes = [box_as_free_list_item(item.box) for item in row]
@@ -481,7 +550,7 @@ def read_lines(
                 row_lines = sorted(row_lines, key=box_left)
                 lines.extend(row_lines)
                 row_text = " ".join(part.text for part in row_lines if part.text).strip()
-                if row_text and on_row is not None:
+                if on_row is not None:
                     on_row(row_text)
             return lines
     except OcrError:
@@ -741,19 +810,33 @@ def render_documents(
     documents: Sequence[RecognizedDocument],
     *,
     spell: bool = True,
+    fix_caps: bool = True,
+    strip_junk: bool = True,
 ) -> str:
     """One file: plain text. Several files: name headers between blocks."""
     if len(documents) == 1:
-        return document_text(documents[0], spell=spell)
+        return document_text(
+            documents[0],
+            spell=spell,
+            fix_caps=fix_caps,
+            strip_junk=strip_junk,
+        )
 
     blocks = [
-        f"=== {document.path.name} ===\n{document_text(document, spell=spell)}"
+        f"=== {document.path.name} ===\n"
+        f"{document_text(document, spell=spell, fix_caps=fix_caps, strip_junk=strip_junk)}"
         for document in documents
     ]
     return "\n\n".join(blocks)
 
 
-def document_text(document: RecognizedDocument, *, spell: bool = True) -> str:
+def document_text(
+    document: RecognizedDocument,
+    *,
+    spell: bool = True,
+    fix_caps: bool = True,
+    strip_junk: bool = True,
+) -> str:
     """Join words on the same visual row with spaces; rows with newlines."""
     rows = group_lines_into_rows(document.lines)
     rendered = [
@@ -764,7 +847,14 @@ def document_text(document: RecognizedDocument, *, spell: bool = True) -> str:
     if not rendered:
         return t("msg.no_text")
     text = "\n".join(rendered)
-    return correct_text(text) if spell else text
+    if not spell and not fix_caps and not strip_junk:
+        return text
+    return correct_text(
+        text,
+        spell=spell,
+        fix_caps=fix_caps,
+        strip_junk=strip_junk,
+    )
 
 
 def render_debug(documents: Sequence[RecognizedDocument]) -> str:

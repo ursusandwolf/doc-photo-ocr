@@ -24,6 +24,35 @@ WORD_PATTERN = re.compile(
 
 MIN_WORD_LEN = 3
 
+# Always drop these — almost never valid in Russian office OCR.
+ALWAYS_JUNK = frozenset(
+    "~`^|\\<>«»„“”‚‘’…�•§¤¿¡□■◆◇▪▫●○★☆►◄▲▼©®™"
+)
+
+# If 2+ of these sit in a row, the whole run is OCR garbage
+# (keeps a single № % : ; ! ? ( ) / " for real text).
+NOISE_RUN_CHARS = '!"№%;:?*(~`|;\\/„“”«»\'"'
+NOISE_RUN = re.compile(rf"[{re.escape(NOISE_RUN_CHARS)}]{{2,}}")
+
+# Lone noise symbols not glued to letters/digits.
+ISOLATED_NOISE = re.compile(
+    r"(?<![\w./])[*\\~`|^]+(?![\w./])",
+)
+
+# Orphan hyphen/dash after a word before space or end (год- → год).
+ORPHAN_DASH = re.compile(
+    r"(?<=[A-Za-zА-Яа-яЁёІіЇїЄєҐґ])[-–—](?=\s|$|[.,;:!?)\]])",
+    re.UNICODE,
+)
+MULTI_SPACE = re.compile(r"[ \t]{2,}")
+SPACE_BEFORE_PUNCT = re.compile(r"\s+([.,;:!])")
+# "?" after a space is almost always OCR noise; "слово?" stays.
+LOOSE_QUESTION = re.compile(r"\s+\?(?=\s|$)")
+LOOSE_EXCLAIM = re.compile(r"\s+!(?=\s|$)")
+EMPTY_PARENS = re.compile(r"\(\s*\)|\[\s*\]")
+# Bare № without a following number is usually noise.
+BARE_NUMERO = re.compile(r"№(?!\s*\d)")
+
 # Always keep these office/OCR tokens even if missing from frequency lists.
 WHITELIST = {
     "ооо",
@@ -71,35 +100,112 @@ def load_office_words() -> list[str]:
     return words
 
 
-def correct_text(text: str) -> str:
-    """Correct unknown alphabetic words; keep dates, codes, punctuation as-is."""
+def has_unexpected_caps(token: str) -> bool:
+    """True for mixed OCR junk like гОД / ПрОшу, but not ЗАЯВЛЕНИЕ or Петрова."""
+    letters = [char for char in token if char.isalpha()]
+    if len(letters) < 2:
+        return False
+    if all(char.isupper() for char in letters):
+        return False
+    if letters[0].isupper() and all(char.islower() for char in letters[1:]):
+        return False
+    return any(char.isupper() for char in letters) and any(
+        char.islower() for char in letters
+    )
+
+
+def strip_junk_text(text: str) -> str:
+    """Remove OCR garbage characters and tidy leftover spacing/punctuation."""
     if not text:
         return text
-    russian, english = get_spellcheckers()
+    cleaned_chars: list[str] = []
+    for char in text:
+        if char in ALWAYS_JUNK:
+            continue
+        if ord(char) < 32 and char not in "\n\t":
+            continue
+        cleaned_chars.append(char)
+    cleaned = "".join(cleaned_chars)
+    # Drop punctuation clusters like !"№;%::?*( first.
+    cleaned = NOISE_RUN.sub(" ", cleaned)
+    cleaned = ISOLATED_NOISE.sub("", cleaned)
+    cleaned = BARE_NUMERO.sub("", cleaned)
+    cleaned = ORPHAN_DASH.sub("", cleaned)
+    cleaned = LOOSE_QUESTION.sub("", cleaned)
+    cleaned = LOOSE_EXCLAIM.sub("", cleaned)
+    cleaned = EMPTY_PARENS.sub("", cleaned)
+    cleaned = SPACE_BEFORE_PUNCT.sub(r"\1", cleaned)
+    cleaned = MULTI_SPACE.sub(" ", cleaned)
+    lines = [line.strip(" \t") for line in cleaned.splitlines()]
+    return "\n".join(lines).strip()
+
+
+def correct_text(
+    text: str,
+    *,
+    spell: bool = True,
+    fix_caps: bool = True,
+    strip_junk: bool = True,
+) -> str:
+    """Polish OCR text: junk chars, weird caps, dictionary fixes."""
+    if not text:
+        return text
+    if not spell and not fix_caps and not strip_junk:
+        return text
+
+    working = strip_junk_text(text) if strip_junk else text
+    if not spell and not fix_caps:
+        return working
+
+    russian, english = get_spellcheckers() if spell else (None, None)
     parts: list[str] = []
     last = 0
-    for match in WORD_PATTERN.finditer(text):
-        parts.append(text[last : match.start()])
-        parts.append(correct_token(match.group(0), russian, english))
+    for match in WORD_PATTERN.finditer(working):
+        parts.append(working[last : match.start()])
+        parts.append(
+            correct_token(
+                match.group(0),
+                russian,
+                english,
+                spell=spell,
+                fix_caps=fix_caps,
+            )
+        )
         last = match.end()
-    parts.append(text[last:])
-    return "".join(parts)
+    parts.append(working[last:])
+    polished = "".join(parts)
+    # Second pass: caps/spell may leave spaces before punctuation tidy again.
+    return strip_junk_text(polished) if strip_junk else polished
 
 
-def correct_token(token: str, russian: SpellChecker, english: SpellChecker) -> str:
-    if len(token) < MIN_WORD_LEN:
-        return token
+def correct_token(
+    token: str,
+    russian: Optional[SpellChecker],
+    english: Optional[SpellChecker],
+    *,
+    spell: bool,
+    fix_caps: bool,
+) -> str:
+    working = token
+    if fix_caps and has_unexpected_caps(working):
+        working = working.lower()
 
-    lower = token.lower()
+    if not spell or russian is None or english is None:
+        return working
+    if len(working) < MIN_WORD_LEN:
+        return working
+
+    lower = working.lower()
     if lower in WHITELIST:
-        return token
+        return working
     if lower in russian or lower in english:
-        return token
+        return working
 
     suggestion = best_correction(lower, russian, english)
     if not suggestion or suggestion == lower:
-        return token
-    return apply_case(token, suggestion)
+        return working
+    # After caps-normalization prefer lowercase unless the token stayed titled/ALLCAPS.
+    return apply_case(working, suggestion)
 
 
 def best_correction(
