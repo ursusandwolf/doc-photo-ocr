@@ -23,7 +23,7 @@ hr-отдел, таб. Ng 1042, Contract ID: HR-2025-078
 
 ### CPP-like Tesseract
 ```
-(pytesseract not installed)
+(tesseract unavailable: tesseract is not installed or it's not in your PATH. See README file for more information.; ocr.py exit 1)
 ```
 
 ### CPP-like EasyOCR
@@ -57,7 +57,7 @@ HR-отдел; таб. Ng 1042, Contract ID: HR-2025-078
 тел. +7 (495) 123-45-67 e-mail: hr@severtorg example
 СПРАВА
 Ng 145-к от 09.11.2025
-Дана Петровой Анне Сергеевна в том; что она действительно
+Дана Петровой Анне Сергеевны в том; что она действительно
 работает в ООО <северторг> в должности менеджера отдела продаж
 c 01.03.2022 по настоящее время
 Средняя заработная плата за последние 3 месяца составляет
@@ -68,7 +68,7 @@ c 01.03.2022 по настоящее время
 
 ### CPP-like Tesseract
 ```
-(pytesseract not installed)
+(tesseract unavailable: tesseract is not installed or it's not in your PATH. See README file for more information.; ocr.py exit 1)
 ```
 
 ### CPP-like EasyOCR
@@ -117,7 +117,7 @@ Invoice Packing list: PL-2025-0458
 
 ### CPP-like Tesseract
 ```
-(pytesseract not installed)
+(tesseract unavailable: tesseract is not installed or it's not in your PATH. See README file for more information.; ocr.py exit 1)
 ```
 
 ### CPP-like EasyOCR

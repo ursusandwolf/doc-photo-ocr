@@ -38,6 +38,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 - CLI batch mode: files, folders, `--per-file`, `--recursive`.
 - Formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` (Cyrillic paths OK).
 - OCR language default: Russian (`--lang ru`; add `+en` when needed).
+- OCR engine: EasyOCR (default) or Tesseract (`--engine tesseract`; system binary, not in zip).
 - Light preprocessing (no hard binarization).
 - Missing models → clear error, no silent network calls.
 
@@ -106,7 +107,14 @@ Selection policy worth encoding later:
 - **Fast / small path:** Tesseract when the user opts in or when install size matters more than photo robustness.
 - **Quality path:** run A, score; if below threshold, offer B and keep the better text (line- or document-level vote).
 
-Do not add Strategy/Factory until a second backend is scheduled — the DTOs and `OcrError` boundary are enough for now. Tesseract / dual-engine is **deferred** (not part of the clipboard/invert UX work). Feature map vs [OCR-CopyPastePad](https://github.com/FlyingFathead/OCR-CopyPastePad): [`docs/compare-copypastepad.md`](docs/compare-copypastepad.md) (ideas only — no upstream license to copy code).
+**Engines (phase 1):** `--engine easyocr` (default) or `--engine tesseract`. GUI combo restarts the worker. Tesseract needs `pytesseract` + system `tesseract.exe` with `rus`/`eng` data — **not** bundled in the Windows zip. Shared polish stays in [`spellcheck.py`](spellcheck.py). Feature map vs [OCR-CopyPastePad](https://github.com/FlyingFathead/OCR-CopyPastePad): [`docs/compare-copypastepad.md`](docs/compare-copypastepad.md).
+
+| Scenario | EasyOCR | Tesseract |
+|---|---|---|
+| Phone photo A4 | Better (default) | Weaker without heavy preprocess |
+| Clean scan / synthetic print | Good; №/quotes/tables still slip | Often better on flat text/digits |
+| Tables | Weak column merge | Weak differently; no layout model |
+| Cold start / RAM | Slow / heavy | Faster / lighter |
 
 ## Design
 

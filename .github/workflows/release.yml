@@ -41,6 +41,8 @@ jobs:
             "start.bat",
             "gui.py",
             "ocr.py",
+            "engines.py",
+            "errors.py",
             "preprocess.py",
             "spellcheck.py",
             "i18n.py",

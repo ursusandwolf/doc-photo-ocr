@@ -24,6 +24,7 @@ from typing import Callable, Optional, Sequence, Union
 
 from PIL import Image, ImageGrab
 
+from engines import DEFAULT_ENGINE, ENGINE_EASY, ENGINE_NAMES, normalize_engine
 from i18n import get_ui_lang, set_ui_lang, t
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images
@@ -38,6 +39,7 @@ DEFAULT_OUTPUT = APP_DIR / "result.txt"
 RUNTIME_PYTHON = APP_DIR / "runtime" / "python.exe"
 UI_PREF_FILE = APP_DIR / "ui_lang.txt"
 THEME_PREF_FILE = APP_DIR / "ui_theme.txt"
+ENGINE_PREF_FILE = APP_DIR / "ui_engine.txt"
 DEFAULT_THEME = "light"
 THEME_NAMES = ("light", "gray", "dark")
 # Tk theming tokens (clam). Wait label stays red on every theme.
@@ -81,18 +83,25 @@ TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
 _LIBS_READY_CACHE: Optional[bool] = None
 
 class OcrEngine:
-    """Long-lived `ocr.py --worker` process with EasyOCR already loaded."""
+    """Long-lived `ocr.py --worker` process with one OCR backend already loaded."""
 
     def __init__(self) -> None:
         self._process: Optional[subprocess.Popen[str]] = None
         self._lock = threading.Lock()
         self.ready = False
+        self.engine_name = DEFAULT_ENGINE
 
-    def start(self, *, on_progress: Callable[[int, int], None]) -> None:
+    def start(
+        self,
+        *,
+        engine: str,
+        on_progress: Callable[[int, int], None],
+    ) -> None:
         self.stop()
         if not VENV_PYTHON.exists():
             raise RuntimeError(t("gui.need_libs_first"))
-        if not models_ready():
+        engine_name = normalize_engine(engine)
+        if engine_name == ENGINE_EASY and not models_ready():
             raise RuntimeError(t("gui.need_models_first"))
 
         command = [
@@ -100,6 +109,8 @@ class OcrEngine:
             str(OCR_SCRIPT),
             "--ui",
             get_ui_lang(),
+            "--engine",
+            engine_name,
             "--worker",
         ]
         self._process = subprocess.Popen(
@@ -128,6 +139,7 @@ class OcrEngine:
                 on_progress(current, total)
             elif line.startswith("##READY"):
                 self.ready = True
+                self.engine_name = engine_name
                 return
             elif line.startswith("##ERROR "):
                 raise RuntimeError(line[len("##ERROR ") :].strip())
@@ -245,6 +257,7 @@ class App(tk.Tk):
         self.invert_enabled = tk.BooleanVar(value=False)
         self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.ui_theme = tk.StringVar(value=load_theme_pref())
+        self.ui_engine = tk.StringVar(value=load_engine_pref())
         self.status_python = tk.StringVar()
         self.status_libs = tk.StringVar()
         self.status_models = tk.StringVar()
@@ -298,6 +311,17 @@ class App(tk.Tk):
         )
         self.theme_combo.pack(side=tk.LEFT, padx=(6, 10))
         self.theme_combo.bind("<<ComboboxSelected>>", self.on_theme_change)
+        self.engine_label = ttk.Label(lang_box)
+        self.engine_label.pack(side=tk.LEFT)
+        self.engine_combo = ttk.Combobox(
+            lang_box,
+            textvariable=self.ui_engine,
+            values=ENGINE_NAMES,
+            width=10,
+            state="readonly",
+        )
+        self.engine_combo.pack(side=tk.LEFT, padx=(6, 10))
+        self.engine_combo.bind("<<ComboboxSelected>>", self.on_engine_change)
         self.lang_label = ttk.Label(lang_box)
         self.lang_label.pack(side=tk.LEFT)
         self.lang_combo = ttk.Combobox(
@@ -402,6 +426,7 @@ class App(tk.Tk):
         self.title(t("gui.title"))
         self.privacy_label.configure(text=t("gui.privacy"))
         self.theme_label.configure(text=t("gui.theme"))
+        self.engine_label.configure(text=t("gui.engine"))
         self.lang_label.configure(text=t("gui.ui_lang"))
         self.status_frame.configure(text=t("gui.status"))
         self.btn_install.configure(text=t("gui.install"))
@@ -525,6 +550,19 @@ class App(tk.Tk):
         save_theme_pref(theme)
         self.apply_theme()
 
+    def on_engine_change(self, _event: object = None) -> None:
+        engine = normalize_engine(self.ui_engine.get())
+        self.ui_engine.set(engine)
+        save_engine_pref(engine)
+        if self._engine_ready and self._engine.engine_name == engine:
+            return
+        if self._busy or self._engine_starting:
+            return
+        self._engine_ready = False
+        self._engine.stop()
+        self.append_log(t("gui.engine_restart", engine=engine))
+        self._maybe_start_engine(force=True)
+
     def _setup_drag_and_drop(self) -> None:
         try:
             import windnd
@@ -595,9 +633,13 @@ class App(tk.Tk):
         else:
             self.status_models.set(t("gui.models_missing"))
 
+        engine_name = normalize_engine(self.ui_engine.get())
+        backend_ready = (
+            models_ready() if engine_name == ENGINE_EASY else True
+        )
         can_run = (
             libs_ok
-            and models_ready()
+            and backend_ready
             and self._engine_ready
             and not self._busy
             and not self._engine_starting
@@ -610,13 +652,19 @@ class App(tk.Tk):
             state=tk.DISABLED if self._busy or not libs_ok else tk.NORMAL
         )
 
-    def _maybe_start_engine(self) -> None:
-        if self._engine_ready or self._engine_starting:
+    def _maybe_start_engine(self, *, force: bool = False) -> None:
+        if not force and (self._engine_ready or self._engine_starting):
             return
-        if not libs_installed() or not models_ready():
+        if self._engine_starting:
+            return
+        if not libs_installed():
+            return
+        engine_name = normalize_engine(self.ui_engine.get())
+        if engine_name == ENGINE_EASY and not models_ready():
             return
 
         self._engine_starting = True
+        self._engine_ready = False
         self.refresh_status()
         self.append_log(t("gui.loading_models"))
         self._set_progress(0, 3)
@@ -624,10 +672,11 @@ class App(tk.Tk):
         def target() -> None:
             try:
                 self._engine.start(
+                    engine=engine_name,
                     on_progress=lambda current, total: self.after(
                         0,
                         lambda c=current, n=total: self._on_engine_progress(c, n),
-                    )
+                    ),
                 )
             except Exception as error:  # noqa: BLE001
                 self.after(0, lambda: self._on_engine_failed(error))
@@ -1054,6 +1103,24 @@ def load_theme_pref() -> str:
 def save_theme_pref(theme: str) -> None:
     try:
         THEME_PREF_FILE.write_text(normalize_theme(theme) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def load_engine_pref() -> str:
+    try:
+        if ENGINE_PREF_FILE.exists():
+            return normalize_engine(ENGINE_PREF_FILE.read_text(encoding="utf-8").strip())
+    except OSError:
+        pass
+    except Exception:  # noqa: BLE001 — bad pref falls back to default
+        pass
+    return DEFAULT_ENGINE
+
+
+def save_engine_pref(engine: str) -> None:
+    try:
+        ENGINE_PREF_FILE.write_text(normalize_engine(engine) + "\n", encoding="utf-8")
     except OSError:
         return
 

@@ -12,4 +12,5 @@ resources/ocr_smoke.txt
 resources/*.debug.txt
 ui_lang.txt
 ui_theme.txt
+ui_engine.txt
 .clipboard_paste.png

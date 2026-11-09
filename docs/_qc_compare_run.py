@@ -47,18 +47,36 @@ def run_ours(image: Path, dest: Path) -> str:
 
 
 def run_tesseract(image: Path) -> str:
-    try:
-        import pytesseract
-        from PIL import Image
-    except ImportError:
-        return "(pytesseract not installed)"
-    try:
-        return pytesseract.image_to_string(Image.open(image), lang="rus+eng")
-    except Exception as error:  # noqa: BLE001
+    dest = Path(tempfile.gettempdir()) / f"qc_{image.name}.tess.txt"
+    code = subprocess.call(
+        [
+            PY,
+            str(ROOT / "ocr.py"),
+            str(image),
+            "-o",
+            str(dest),
+            "--lang",
+            "ru+en",
+            "--engine",
+            "tesseract",
+            "--no-preprocess",
+            "--ui",
+            "en",
+        ],
+        cwd=str(ROOT),
+    )
+    if code != 0:
         try:
-            return pytesseract.image_to_string(Image.open(image))
-        except Exception as error2:  # noqa: BLE001
-            return f"(tesseract error: {error}; fallback: {error2})"
+            import pytesseract
+            from PIL import Image
+
+            return clip(
+                pytesseract.image_to_string(Image.open(image), lang="rus+eng")
+                or f"(ocr.py tesseract exit {code})"
+            )
+        except Exception as error:  # noqa: BLE001
+            return f"(tesseract unavailable: {error}; ocr.py exit {code})"
+    return dest.read_text(encoding="utf-8") if dest.exists() else f"(no output, exit {code})"
 
 
 def run_easyocr(image: Path) -> str:

@@ -41,6 +41,52 @@ class CliSmokeTests(unittest.TestCase):
     def test_parse_languages(self) -> None:
         self.assertEqual(ocr.parse_languages("ru+en,ru"), ["ru", "en"])
 
+    def test_normalize_engine(self) -> None:
+        from engines import normalize_engine
+
+        self.assertEqual(normalize_engine("EasyOCR"), "easyocr")
+        self.assertEqual(normalize_engine("tesseract"), "tesseract")
+        with self.assertRaises(ocr.OcrError):
+            normalize_engine("paddle")
+
+
+class EngineSmokeTests(unittest.TestCase):
+    def test_tesseract_lang_string(self) -> None:
+        from engines import tesseract_lang_string
+
+        self.assertEqual(tesseract_lang_string(["ru"]), "rus")
+        self.assertEqual(tesseract_lang_string(["ru", "en"]), "rus+eng")
+
+    def test_parse_tesseract_data_builds_boxes(self) -> None:
+        from engines import parse_tesseract_data
+
+        data = {
+            "text": ["", "Hello", "мир"],
+            "conf": ["-1", "95", "80"],
+            "left": [0, 10, 50],
+            "top": [0, 20, 20],
+            "width": [0, 40, 30],
+            "height": [0, 12, 12],
+        }
+        lines = parse_tesseract_data(data)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0].text, "Hello")
+        self.assertAlmostEqual(lines[0].confidence, 0.95)
+        self.assertEqual(lines[0].box[0], (10, 20))
+        self.assertEqual(lines[1].text, "мир")
+
+    def test_tesseract_missing_binary_raises(self) -> None:
+        from engines import TesseractEngine, ensure_tesseract_available
+
+        try:
+            ensure_tesseract_available()
+        except ocr.OcrError as error:
+            self.assertIn("Tesseract", str(error))
+            return
+        # Binary present: warm must succeed.
+        engine = TesseractEngine(["ru", "en"])
+        engine.warm()
+
 
 class PreprocessSmokeTests(unittest.TestCase):
     def test_full_frame_page_keeps_size(self) -> None:
@@ -321,11 +367,14 @@ class OfflineOcrSmokeTests(unittest.TestCase):
         image_path = ROOT / "resources" / "zayavlenie_otpusk.png"
         if not image_path.exists():
             self.skipTest("fixture missing")
-        reader = ocr.create_reader(["ru", "en"], allow_download=False)
+        from engines import create_engine
+
+        engine = create_engine("easyocr", ["ru", "en"], allow_download=False)
+        engine.warm()
         streamed: list[str] = []
         row_counts: list[int] = []
         document = ocr.recognize_file(
-            reader,
+            engine,
             image_path,
             preprocess_image=True,
             on_row=streamed.append,

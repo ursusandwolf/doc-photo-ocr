@@ -30,6 +30,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         ),
         "cli.images_help": "Файлы и/или папки с изображениями: .jpg, .jpeg, .png, .webp, .bmp.",
         "cli.lang_help": "Языки OCR через + или запятую. По умолчанию: ru.",
+        "cli.engine_help": "Движок OCR: easyocr (по умолчанию) или tesseract (нужен tesseract.exe в PATH).",
         "cli.output_help": "Общий файл результата. По умолчанию: result.txt. Игнорируется с --per-file.",
         "cli.per_file_help": "Пакетный режим: рядом с каждым фото писать отдельный .txt с тем же именем.",
         "cli.recursive_help": "В папках искать изображения во всех вложенных каталогах.",
@@ -40,9 +41,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "cli.no_fix_caps_help": "Не исправлять странный регистр вроде гОД (по умолчанию исправление включено).",
         "cli.strip_junk_help": "Удалить мусорные символы OCR вроде ~ < > (по умолчанию выключено).",
         "cli.download_help": "Один раз скачать модели в папку models. Единственная команда, которой нужен интернет.",
-        "cli.worker_help": "Держать EasyOCR в памяти и принимать JSON-задания из stdin (для GUI).",
+        "cli.worker_help": "Держать выбранный OCR-движок в памяти и принимать JSON-задания из stdin (для GUI).",
         "cli.ui_help": "Язык интерфейса: ru (по умолчанию) или en.",
         "err.need_ocr_lang": "Укажите хотя бы один язык OCR, например --lang ru.",
+        "err.bad_engine": "Неизвестный движок OCR «{engine}». Допустимо: {allowed}.",
+        "err.no_pytesseract": "Не установлен пакет pytesseract. Выполните «Установить библиотеки».",
+        "err.no_tesseract": (
+            "Tesseract OCR не найден в PATH.\n"
+            "Установите бинарник (например UB-Mannheim) и языки rus/eng,\n"
+            "либо используйте --engine easyocr."
+        ),
         "err.download_with_images": (
             "Загрузка моделей запускается отдельно, без путей к фото:\n"
             "  python ocr.py --download-models"
@@ -120,6 +128,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.log": "Журнал",
         "gui.ui_lang": "Язык:",
         "gui.theme": "Тема:",
+        "gui.engine": "Движок:",
+        "gui.engine_restart": "Перезапуск OCR worker ({engine})…",
         "gui.python_missing": "Python: не найден (нужен 3.9+ с tkinter или папка runtime)",
         "gui.python_ok": "Python: {version} ({source})",
         "gui.source_system": "системный",
@@ -191,6 +201,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         ),
         "cli.images_help": "Image files and/or folders: .jpg, .jpeg, .png, .webp, .bmp.",
         "cli.lang_help": "OCR languages joined by + or comma. Default: ru.",
+        "cli.engine_help": "OCR engine: easyocr (default) or tesseract (needs tesseract.exe on PATH).",
         "cli.output_help": "Shared output file. Default: result.txt. Ignored with --per-file.",
         "cli.per_file_help": "Batch mode: write a matching .txt next to each image.",
         "cli.recursive_help": "Search images in nested folders as well.",
@@ -201,9 +212,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "cli.no_fix_caps_help": "Disable odd capitalization fixes like гОД (enabled by default).",
         "cli.strip_junk_help": "Remove OCR junk characters like ~ < > (off by default).",
         "cli.download_help": "Download models into models/ once. The only command that needs the internet.",
-        "cli.worker_help": "Keep EasyOCR in memory and accept JSON jobs from stdin (for the GUI).",
+        "cli.worker_help": "Keep the selected OCR engine in memory and accept JSON jobs from stdin (for the GUI).",
         "cli.ui_help": "UI language: ru (default) or en.",
         "err.need_ocr_lang": "Provide at least one OCR language, e.g. --lang ru.",
+        "err.bad_engine": "Unknown OCR engine \"{engine}\". Allowed: {allowed}.",
+        "err.no_pytesseract": "pytesseract is not installed. Run Install libraries.",
+        "err.no_tesseract": (
+            "Tesseract OCR was not found on PATH.\n"
+            "Install the binary (e.g. UB-Mannheim) with rus/eng data,\n"
+            "or use --engine easyocr."
+        ),
         "err.download_with_images": (
             "Model download runs alone, without image paths:\n"
             "  python ocr.py --download-models"
@@ -281,6 +299,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.log": "Log",
         "gui.ui_lang": "Language:",
         "gui.theme": "Theme:",
+        "gui.engine": "Engine:",
+        "gui.engine_restart": "Restarting OCR worker ({engine})…",
         "gui.python_missing": "Python: not found (need 3.9+ with tkinter or a runtime folder)",
         "gui.python_ok": "Python: {version} ({source})",
         "gui.source_system": "system",

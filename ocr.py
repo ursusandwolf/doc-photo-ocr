@@ -7,7 +7,7 @@ Run path:
 3. Check that each path exists and the format is supported.
 4. Load the image (including Cyrillic paths on Windows).
 5. Preprocess unless --no-preprocess is set.
-6. Run EasyOCR on CPU with local weights.
+6. Run the selected OCR engine (EasyOCR default, or Tesseract).
 7. Print text and write result.txt (or one .txt per file with --per-file).
 
 Inputs may be files and/or folders. A folder takes first-level images;
@@ -37,6 +37,8 @@ from i18n import get_ui_lang, set_ui_lang, t
 from image_paths import SUPPORTED_EXTENSIONS
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images as collect_image_paths
+from engines import DEFAULT_ENGINE, create_engine, normalize_engine
+from errors import OcrError
 from preprocess import find_document_corners, invert_image, preprocess
 from spellcheck import correct_text
 
@@ -50,10 +52,6 @@ MAX_CENTER_Y_RATIO = 0.35
 # EasyOCR stores detection/recognition weights under models/.
 # Without .pth files we fail early with a clear offline error.
 MODEL_FILE_GLOB = "*.pth"
-
-
-class OcrError(Exception):
-    """User-visible failure without a traceback dump."""
 
 
 class TextLine(NamedTuple):
@@ -84,6 +82,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("images", nargs="*", type=Path, help=t("cli.images_help"))
     parser.add_argument("--lang", default=DEFAULT_LANGUAGES, help=t("cli.lang_help"))
+    parser.add_argument(
+        "--engine",
+        default=DEFAULT_ENGINE,
+        help=t("cli.engine_help"),
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -161,10 +164,12 @@ def run(args: argparse.Namespace) -> None:
         download_models(languages)
         return
 
+    engine_name = normalize_engine(getattr(args, "engine", DEFAULT_ENGINE))
+
     if args.worker:
         if args.images:
             raise OcrError(t("err.worker_with_images"))
-        run_worker(languages)
+        run_worker(languages, engine_name=engine_name)
         return
 
     if not args.images:
@@ -178,13 +183,14 @@ def run(args: argparse.Namespace) -> None:
         ensure_supported_image(image_path)
 
     print(t("msg.files_count", count=len(image_paths)))
-    reader = create_reader(languages, allow_download=False)
+    engine = create_engine(engine_name, languages, allow_download=False)
+    engine.warm()
     documents: list[RecognizedDocument] = []
     for image_path in image_paths:
         print(t("msg.processing", path=image_path))
         documents.append(
             recognize_file(
-                reader,
+                engine,
                 image_path,
                 preprocess_image=not args.no_preprocess,
                 invert=bool(args.invert),
@@ -275,12 +281,13 @@ def emit_worker(tag: str, payload: str = "") -> None:
     print(message, flush=True)
 
 
-def run_worker(languages: Sequence[str]) -> None:
-    """Keep EasyOCR loaded and accept JSON recognize jobs on stdin."""
+def run_worker(languages: Sequence[str], *, engine_name: str = DEFAULT_ENGINE) -> None:
+    """Keep one OCR backend loaded and accept JSON recognize jobs on stdin."""
+    engine_name = normalize_engine(engine_name)
     emit_worker("PROGRESS", "1/3 importing")
-    import_easyocr()
+    engine = create_engine(engine_name, languages, allow_download=False)
     emit_worker("PROGRESS", "2/3 loading")
-    reader = create_reader(languages, allow_download=False)
+    engine.warm()
     emit_worker("PROGRESS", "3/3 ready")
     emit_worker("READY")
 
@@ -306,7 +313,7 @@ def run_worker(languages: Sequence[str]) -> None:
             continue
 
         try:
-            handle_worker_recognize(reader, request)
+            handle_worker_recognize(engine, request)
             emit_worker("OK")
         except OcrError as error:
             emit_worker("ERROR", str(error))
@@ -314,7 +321,7 @@ def run_worker(languages: Sequence[str]) -> None:
             emit_worker("ERROR", str(error))
 
 
-def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
+def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
     """Recognize one batch from a worker JSON request and write the output file."""
     ui = str(request.get("ui") or get_ui_lang())
     set_ui_lang(ui)
@@ -356,7 +363,7 @@ def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
         emit_worker("FILE", f"{index}/{len(images)} {image_path}")
         documents.append(
             recognize_file(
-                reader,
+                engine,
                 image_path,
                 preprocess_image=not no_preprocess,
                 invert=invert,
@@ -403,7 +410,7 @@ def ensure_supported_image(path: Path) -> None:
 
 
 def recognize_file(
-    reader: Any,
+    engine: Any,
     path: Path,
     *,
     preprocess_image: bool,
@@ -415,6 +422,7 @@ def recognize_file(
 
     on_rows is called once with the number of visual rows after detection.
     on_row is called after each row is recognized (may be empty).
+    `engine` is an OcrBackend (EasyOCR or Tesseract).
     """
     image = load_image(path)
     if invert:
@@ -423,8 +431,7 @@ def recognize_file(
         prepared = preprocess(image) if preprocess_image else image
     except cv2.error as error:
         raise OcrError(t("err.preprocess", name=path.name, error=error)) from error
-    lines = read_lines(
-        reader,
+    lines = engine.recognize(
         prepared,
         path,
         on_row=on_row,
