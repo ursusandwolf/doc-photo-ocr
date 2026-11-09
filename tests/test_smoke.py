@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 import ocr
+import spellcheck
 
 MODELS_DIR = ROOT / "models"
 SAMPLE_IMAGE = ROOT / "samples" / "sample_contract.png"
@@ -91,7 +92,7 @@ class TextLayoutSmokeTests(unittest.TestCase):
             ocr.TextLine("графику", 0.9, ((110, 162), (200, 162), (200, 192), (110, 192))),
         )
         document = ocr.RecognizedDocument(Path("x.png"), lines)
-        text = ocr.document_text(document)
+        text = ocr.document_text(document, spell=False)
         self.assertEqual(
             text,
             "Прошу предоставить отпуск\nСогласно графику",
@@ -107,7 +108,7 @@ class TextLayoutSmokeTests(unittest.TestCase):
             ocr.TextLine("по", 0.9, ((130, 136), (160, 136), (160, 164), (130, 164))),
             ocr.TextLine("28.07.2025", 0.9, ((170, 136), (290, 136), (290, 164), (170, 164))),
         )
-        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines))
+        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines), spell=False)
         self.assertEqual(
             text,
             "Прошу предоставить мне\n15.07.2025 по 28.07.2025",
@@ -130,7 +131,7 @@ class TextLayoutSmokeTests(unittest.TestCase):
             ocr.TextLine("по 28.07", 0.77, ((212, 558), (328, 558), (328, 606), (212, 606))),
             ocr.TextLine("15.07", 0.70, ((65, 593), (141, 593), (141, 633), (65, 633))),
         )
-        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines))
+        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines), spell=False)
         self.assertEqual(
             text.splitlines()[0],
             "Прошу предоставить мне ежегодный оплачиваемый отпуск",
@@ -139,6 +140,53 @@ class TextLayoutSmokeTests(unittest.TestCase):
             text.splitlines()[1],
             r"15\.07.*по 28\.07.*включительно.*\(14.*дней\)",
         )
+
+    def test_detection_placeholders_cluster_into_rows(self) -> None:
+        horizontal = (
+            [10, 80, 100, 128],
+            [90, 200, 100, 128],
+            [10, 120, 136, 164],
+            [130, 290, 136, 164],
+        )
+        placeholders = ocr.detection_placeholders(horizontal, [])
+        rows = ocr.group_lines_into_rows(placeholders)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows[0]), 2)
+        self.assertEqual(len(rows[1]), 2)
+        self.assertEqual(ocr.box_as_free_list_item(rows[0][0].box)[0], [10, 100])
+
+    def test_parse_easyocr_results_skips_empty(self) -> None:
+        raw = [
+            ([[0, 0], [10, 0], [10, 10], [0, 10]], "Hello", 0.9),
+            ([[20, 0], [30, 0], [30, 10], [20, 10]], "  ", 0.5),
+        ]
+        lines = ocr.parse_easyocr_results(raw)
+        self.assertEqual([item.text for item in lines], ["Hello"])
+
+
+class SpellcheckSmokeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        spellcheck.reset_spellcheckers_cache()
+
+    def test_fixes_ocr_typo_and_keeps_dates_codes(self) -> None:
+        text = "14 жкалендарных дней\n15.07.2025 HR-2025-078"
+        fixed = spellcheck.correct_text(text)
+        self.assertIn("календарных", fixed)
+        self.assertNotIn("жкалендарных", fixed)
+        self.assertIn("15.07.2025", fixed)
+        self.assertIn("HR-2025-078", fixed)
+
+    def test_document_text_respects_no_spell(self) -> None:
+        lines = (
+            ocr.TextLine(
+                "жкалендарных",
+                0.9,
+                ((10, 100), (120, 100), (120, 130), (10, 130)),
+            ),
+        )
+        document = ocr.RecognizedDocument(Path("x.png"), lines)
+        self.assertEqual(ocr.document_text(document, spell=False), "жкалендарных")
+        self.assertEqual(ocr.document_text(document, spell=True), "календарных")
 
 
 class BatchPathSmokeTests(unittest.TestCase):
@@ -181,6 +229,23 @@ class OfflineOcrSmokeTests(unittest.TestCase):
         lowered = text.lower()
         self.assertIn("договор", lowered)
         self.assertTrue("contract" in lowered or "a4" in lowered)
+
+    def test_on_row_streams_before_final_text(self) -> None:
+        image_path = ROOT / "resources" / "zayavlenie_otpusk.png"
+        if not image_path.exists():
+            self.skipTest("fixture missing")
+        reader = ocr.create_reader(["ru", "en"], allow_download=False)
+        streamed: list[str] = []
+        document = ocr.recognize_file(
+            reader,
+            image_path,
+            preprocess_image=True,
+            on_row=streamed.append,
+        )
+        final = ocr.document_text(document)
+        self.assertGreaterEqual(len(streamed), 3)
+        self.assertTrue(any("Прошу" in row for row in streamed))
+        self.assertIn("Прошу предоставить", final)
 
     def _make_temp_image(self) -> Path:
         path = Path(tempfile.gettempdir()) / "ocr_smoke_contract.png"

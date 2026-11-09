@@ -37,7 +37,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 - GUI: one-click setup, drag-and-drop, RU/EN UI.
 - CLI batch mode: files, folders, `--per-file`, `--recursive`.
 - Formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` (Cyrillic paths OK).
-- OCR languages: Russian + English (`--lang`).
+- OCR language default: Russian (`--lang ru`; add `+en` when needed).
 - Light preprocessing (no hard binarization).
 - Missing models → clear error, no silent network calls.
 
@@ -122,7 +122,7 @@ python ocr.py document.jpg --no-preprocess
 | `--recursive` | Also scan nested folders |
 | `--per-file` | Write `name.txt` next to each image |
 | `--ui ru\|en` | UI language (default `ru`) |
-| `--lang ru+en` | OCR languages |
+| `--lang ru` | OCR languages (default `ru`; use `ru+en` for mixed text) |
 | `-o result.txt` | Shared output (ignored with `--per-file`) |
 | `--debug` | Coordinates + confidence |
 | `--no-preprocess` | Skip geometry/contrast |

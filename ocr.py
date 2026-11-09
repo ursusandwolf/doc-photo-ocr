@@ -27,7 +27,7 @@ import sys
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, NamedTuple, Optional, Sequence
+from typing import Any, Callable, Iterator, NamedTuple, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -38,8 +38,9 @@ from image_paths import SUPPORTED_EXTENSIONS
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images as collect_image_paths
 from preprocess import find_document_corners, preprocess
+from spellcheck import correct_text
 
-DEFAULT_LANGUAGES = "ru+en"
+DEFAULT_LANGUAGES = "ru"
 DEFAULT_OUTPUT = Path("result.txt")
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 # Line clustering: prefer vertical overlap; center distance is a fallback.
@@ -97,6 +98,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--no-preprocess",
         action="store_true",
         help=t("cli.no_preprocess_help"),
+    )
+    parser.add_argument(
+        "--no-spell",
+        action="store_true",
+        help=t("cli.no_spell_help"),
     )
     parser.add_argument(
         "--download-models",
@@ -169,11 +175,12 @@ def run(args: argparse.Namespace) -> None:
             )
         )
 
+    spell = not args.no_spell
     if args.per_file:
-        write_per_file_results(documents, debug=args.debug)
+        write_per_file_results(documents, debug=args.debug, spell=spell)
         return
 
-    text = render_documents(documents)
+    text = render_documents(documents, spell=spell)
     save_text(args.output, text)
     print_result(text, args.output)
 
@@ -198,6 +205,7 @@ def write_per_file_results(
     documents: Sequence[RecognizedDocument],
     *,
     debug: bool,
+    spell: bool = True,
 ) -> None:
     """Write document.png -> document.txt next to each input."""
     if not documents:
@@ -205,7 +213,7 @@ def write_per_file_results(
 
     for document in documents:
         output = document.path.with_suffix(".txt")
-        text = document_text(document)
+        text = document_text(document, spell=spell)
         save_text(output, text)
         print(f"{document.path.name} -> {output}")
         if debug:
@@ -281,9 +289,13 @@ def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
     no_preprocess = bool(request.get("no_preprocess", False))
     debug = bool(request.get("debug", False))
     per_file = bool(request.get("per_file", False))
+    spell = bool(request.get("spell", True))
 
     for image_path in images:
         ensure_supported_image(image_path)
+
+    def emit_line(text: str) -> None:
+        emit_worker("LINE", correct_text(text) if spell else text)
 
     emit_worker("FILES", str(len(images)))
     documents: list[RecognizedDocument] = []
@@ -294,14 +306,15 @@ def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
                 reader,
                 image_path,
                 preprocess_image=not no_preprocess,
+                on_row=emit_line,
             )
         )
 
     if per_file:
-        write_per_file_results(documents, debug=debug)
+        write_per_file_results(documents, debug=debug, spell=spell)
         return
 
-    text = render_documents(documents)
+    text = render_documents(documents, spell=spell)
     save_text(output, text)
     if debug:
         save_text(debug_output_path(output), render_debug(documents))
@@ -323,14 +336,23 @@ def ensure_supported_image(path: Path) -> None:
     raise OcrError(t("err.bad_format", ext=extension, allowed=allowed))
 
 
-def recognize_file(reader: Any, path: Path, *, preprocess_image: bool) -> RecognizedDocument:
-    """Read one file and return lines in reading order."""
+def recognize_file(
+    reader: Any,
+    path: Path,
+    *,
+    preprocess_image: bool,
+    on_row: Optional[Callable[[str], None]] = None,
+) -> RecognizedDocument:
+    """Read one file and return word boxes in reading order.
+
+    on_row is called with each visual text row as soon as that row is recognized.
+    """
     image = load_image(path)
     try:
         prepared = preprocess(image) if preprocess_image else image
     except cv2.error as error:
         raise OcrError(t("err.preprocess", name=path.name, error=error)) from error
-    lines = read_lines(reader, prepared, path)
+    lines = read_lines(reader, prepared, path, on_row=on_row)
     return RecognizedDocument(path=path, lines=tuple(lines))
 
 
@@ -423,21 +445,107 @@ def silence_library_noise() -> Iterator[None]:
         yield
 
 
-def read_lines(reader: Any, image: np.ndarray, path: Path) -> list[TextLine]:
-    """Run OCR. Word boxes are kept separate; document_text joins them into lines."""
+def read_lines(
+    reader: Any,
+    image: np.ndarray,
+    path: Path,
+    *,
+    on_row: Optional[Callable[[str], None]] = None,
+) -> list[TextLine]:
+    """Detect once, recognize row by row, optionally stream each row via on_row."""
     try:
         with silence_library_noise():
-            # paragraph=False keeps boxes; we rebuild lines ourselves for stable order.
-            raw_rows = reader.readtext(image, detail=1, paragraph=False)
+            from easyocr.utils import reformat_input
+
+            img, img_cv_grey = reformat_input(image)
+            horizontal_list, free_list = reader.detect(img, reformat=False)
+            # EasyOCR returns depth-3 lists; readtext unwraps the first page.
+            horizontal_list, free_list = horizontal_list[0], free_list[0]
+            placeholders = detection_placeholders(horizontal_list, free_list)
+            if not placeholders:
+                return []
+
+            rows = group_lines_into_rows(placeholders)
+            lines: list[TextLine] = []
+            for row in rows:
+                free_boxes = [box_as_free_list_item(item.box) for item in row]
+                raw_rows = reader.recognize(
+                    img_cv_grey,
+                    horizontal_list=[],
+                    free_list=free_boxes,
+                    detail=1,
+                    paragraph=False,
+                    reformat=False,
+                )
+                row_lines = parse_easyocr_results(raw_rows)
+                row_lines = sorted(row_lines, key=box_left)
+                lines.extend(row_lines)
+                row_text = " ".join(part.text for part in row_lines if part.text).strip()
+                if row_text and on_row is not None:
+                    on_row(row_text)
+            return lines
+    except OcrError:
+        raise
     except Exception as error:
         raise OcrError(t("err.recognize", name=path.name, error=error)) from error
 
+
+def detection_placeholders(
+    horizontal_list: Sequence[Any],
+    free_list: Sequence[Any],
+) -> list[TextLine]:
+    """Turn EasyOCR detect boxes into TextLine placeholders for row clustering."""
+    placeholders: list[TextLine] = []
+    for item in horizontal_list or []:
+        box = horizontal_box_to_points(item)
+        if box is not None:
+            placeholders.append(TextLine(text="", confidence=0.0, box=box))
+    for item in free_list or []:
+        box = free_box_to_points(item)
+        if box is not None:
+            placeholders.append(TextLine(text="", confidence=0.0, box=box))
+    return placeholders
+
+
+def horizontal_box_to_points(item: Any) -> Optional[tuple[tuple[int, int], ...]]:
+    """Convert [x_min, x_max, y_min, y_max] into a 4-point box."""
+    try:
+        x_min, x_max, y_min, y_max = (int(value) for value in item[:4])
+    except (TypeError, ValueError):
+        return None
+    return (
+        (x_min, y_min),
+        (x_max, y_min),
+        (x_max, y_max),
+        (x_min, y_max),
+    )
+
+
+def free_box_to_points(item: Any) -> Optional[tuple[tuple[int, int], ...]]:
+    """Convert a free-form 4-point EasyOCR box into int tuples."""
+    try:
+        points = tuple((int(x), int(y)) for x, y in item)
+    except (TypeError, ValueError):
+        return None
+    if len(points) < 4:
+        return None
+    return points[:4]
+
+
+def box_as_free_list_item(box: Sequence[tuple[int, int]]) -> list[list[int]]:
+    """EasyOCR free_list entry: [[x,y], ...]."""
+    return [[int(x), int(y)] for x, y in box]
+
+
+def parse_easyocr_results(raw_rows: Sequence[Any]) -> list[TextLine]:
+    """Convert EasyOCR detail=1 rows into TextLine values."""
     lines: list[TextLine] = []
     for box, text, confidence in raw_rows:
-        points = tuple((int(x), int(y)) for x, y in box)
+        points = free_box_to_points(box)
         cleaned = str(text).strip()
-        if cleaned:
-            lines.append(TextLine(text=cleaned, confidence=float(confidence), box=points))
+        if points is None or not cleaned:
+            continue
+        lines.append(TextLine(text=cleaned, confidence=float(confidence), box=points))
     return lines
 
 
@@ -629,19 +737,23 @@ def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
     return [[item.line for item in row] for row in rows]
 
 
-def render_documents(documents: Sequence[RecognizedDocument]) -> str:
+def render_documents(
+    documents: Sequence[RecognizedDocument],
+    *,
+    spell: bool = True,
+) -> str:
     """One file: plain text. Several files: name headers between blocks."""
     if len(documents) == 1:
-        return document_text(documents[0])
+        return document_text(documents[0], spell=spell)
 
     blocks = [
-        f"=== {document.path.name} ===\n{document_text(document)}"
+        f"=== {document.path.name} ===\n{document_text(document, spell=spell)}"
         for document in documents
     ]
     return "\n\n".join(blocks)
 
 
-def document_text(document: RecognizedDocument) -> str:
+def document_text(document: RecognizedDocument, *, spell: bool = True) -> str:
     """Join words on the same visual row with spaces; rows with newlines."""
     rows = group_lines_into_rows(document.lines)
     rendered = [
@@ -651,7 +763,8 @@ def document_text(document: RecognizedDocument) -> str:
     rendered = [line for line in rendered if line]
     if not rendered:
         return t("msg.no_text")
-    return "\n".join(rendered)
+    text = "\n".join(rendered)
+    return correct_text(text) if spell else text
 
 
 def render_debug(documents: Sequence[RecognizedDocument]) -> str:

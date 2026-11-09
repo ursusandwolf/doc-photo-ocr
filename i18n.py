@@ -29,16 +29,17 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  python ocr.py --download-models\n"
         ),
         "cli.images_help": "Файлы и/или папки с изображениями: .jpg, .jpeg, .png, .webp, .bmp.",
-        "cli.lang_help": "Языки OCR через + или запятую. По умолчанию: ru+en.",
+        "cli.lang_help": "Языки OCR через + или запятую. По умолчанию: ru.",
         "cli.output_help": "Общий файл результата. По умолчанию: result.txt. Игнорируется с --per-file.",
         "cli.per_file_help": "Пакетный режим: рядом с каждым фото писать отдельный .txt с тем же именем.",
         "cli.recursive_help": "В папках искать изображения во всех вложенных каталогах.",
         "cli.debug_help": "Дополнительно сохранить координаты блоков и уверенность распознавания.",
         "cli.no_preprocess_help": "Отдать в OCR исходное фото, без выравнивания и контраста.",
+        "cli.no_spell_help": "Не исправлять орфографию по офлайн-словарю (по умолчанию исправление включено).",
         "cli.download_help": "Один раз скачать модели в папку models. Единственная команда, которой нужен интернет.",
         "cli.worker_help": "Держать EasyOCR в памяти и принимать JSON-задания из stdin (для GUI).",
         "cli.ui_help": "Язык интерфейса: ru (по умолчанию) или en.",
-        "err.need_ocr_lang": "Укажите хотя бы один язык OCR, например --lang ru+en.",
+        "err.need_ocr_lang": "Укажите хотя бы один язык OCR, например --lang ru.",
         "err.download_with_images": (
             "Загрузка моделей запускается отдельно, без путей к фото:\n"
             "  python ocr.py --download-models"
@@ -103,6 +104,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.pick_file": "Выбрать файл…",
         "gui.pick_folder": "Выбрать папку…",
         "gui.result": "Результат:",
+        "gui.spell": "Исправлять орфографию",
         "gui.open": "Открыть",
         "gui.log": "Журнал",
         "gui.ui_lang": "Язык:",
@@ -155,6 +157,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.progress": "Прогресс",
         "gui.progress_file": "{current}/{total}",
         "gui.loading_models": "Загрузка моделей…",
+        "gui.wait_ocr": "Ждите, идёт распознавание",
         "gui.engine_ready": "Движок OCR готов.",
         "gui.engine_not_ready": "Сначала дождитесь загрузки моделей.",
         "gui.engine_failed": "Не удалось загрузить модели: {error}",
@@ -175,16 +178,17 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  python ocr.py --download-models\n"
         ),
         "cli.images_help": "Image files and/or folders: .jpg, .jpeg, .png, .webp, .bmp.",
-        "cli.lang_help": "OCR languages joined by + or comma. Default: ru+en.",
+        "cli.lang_help": "OCR languages joined by + or comma. Default: ru.",
         "cli.output_help": "Shared output file. Default: result.txt. Ignored with --per-file.",
         "cli.per_file_help": "Batch mode: write a matching .txt next to each image.",
         "cli.recursive_help": "Search images in nested folders as well.",
         "cli.debug_help": "Also save block coordinates and confidence scores.",
         "cli.no_preprocess_help": "Send the original photo to OCR without geometry/contrast tweaks.",
+        "cli.no_spell_help": "Disable offline dictionary spell-fix (enabled by default).",
         "cli.download_help": "Download models into models/ once. The only command that needs the internet.",
         "cli.worker_help": "Keep EasyOCR in memory and accept JSON jobs from stdin (for the GUI).",
         "cli.ui_help": "UI language: ru (default) or en.",
-        "err.need_ocr_lang": "Provide at least one OCR language, e.g. --lang ru+en.",
+        "err.need_ocr_lang": "Provide at least one OCR language, e.g. --lang ru.",
         "err.download_with_images": (
             "Model download runs alone, without image paths:\n"
             "  python ocr.py --download-models"
@@ -249,6 +253,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.pick_file": "Choose file…",
         "gui.pick_folder": "Choose folder…",
         "gui.result": "Output:",
+        "gui.spell": "Fix spelling",
         "gui.open": "Open",
         "gui.log": "Log",
         "gui.ui_lang": "Language:",
@@ -301,6 +306,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.progress": "Progress",
         "gui.progress_file": "{current}/{total}",
         "gui.loading_models": "Loading models…",
+        "gui.wait_ocr": "Please wait, recognition in progress",
         "gui.engine_ready": "OCR engine is ready.",
         "gui.engine_not_ready": "Wait until models finish loading.",
         "gui.engine_failed": "Failed to load models: {error}",
