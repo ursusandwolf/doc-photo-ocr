@@ -41,6 +41,7 @@ jobs:
             "ocr.py",
             "preprocess.py",
             "i18n.py",
+            "image_paths.py",
             "requirements.txt",
             "README.md",
             ".gitignore"

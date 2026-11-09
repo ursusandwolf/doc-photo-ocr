@@ -9,15 +9,18 @@
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import sys
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, Union
 
 from i18n import get_ui_lang, set_ui_lang, t
+from image_paths import PathError as ImagePathError
+from image_paths import collect_images
 
 APP_DIR = Path(__file__).resolve().parent
 VENV_DIR = APP_DIR / ".venv"
@@ -48,11 +51,14 @@ class App(tk.Tk):
         self._busy = False
         self._last_result: Optional[Path] = None
         self._last_task_key: Optional[str] = None
+        # Drop callback runs inside a Win32 WndProc — never call Tk from there.
+        self._drop_queue: queue.Queue[Union[list[Path], BaseException]] = queue.Queue()
 
         self._build()
         self.apply_language()
         self.refresh_status()
         self._setup_drag_and_drop()
+        self.after(200, self._poll_drop_queue)
 
     def _build(self) -> None:
         self.root_frame = ttk.Frame(self, padding=12)
@@ -156,12 +162,30 @@ class App(tk.Tk):
             self.append_log(t("gui.dnd_after_install"))
             return
 
-        def on_drop(files: list[bytes]) -> None:
-            paths = [Path(item.decode("utf-8", errors="replace")) for item in files]
-            self.after(0, lambda: self.process_paths(paths))
+        def on_drop(files: list) -> None:
+            # Must not touch Tk widgets here (runs inside hooked WndProc).
+            try:
+                paths = [decode_drop_path(item) for item in files]
+                self._drop_queue.put(paths)
+            except Exception as error:  # noqa: BLE001
+                self._drop_queue.put(error)
 
-        windnd.hook_dropfiles(self, func=on_drop)
+        # Unicode API — required for Cyrillic paths on Windows.
+        windnd.hook_dropfiles(self, func=on_drop, force_unicode=True)
         self.append_log(t("gui.dnd_ready"))
+
+    def _poll_drop_queue(self) -> None:
+        try:
+            while True:
+                item = self._drop_queue.get_nowait()
+                if isinstance(item, BaseException):
+                    messagebox.showerror("OCR", str(item))
+                    self.append_log(t("gui.error", title="drag-and-drop", error=item))
+                else:
+                    self.process_paths(item)
+        except queue.Empty:
+            pass
+        self.after(200, self._poll_drop_queue)
 
     def refresh_status(self) -> None:
         if self.base_python is None:
@@ -236,9 +260,10 @@ class App(tk.Tk):
         if self._busy:
             return
         try:
-            import ocr as ocr_engine
-
-            images = ocr_engine.collect_images(paths, recursive=False)
+            images = collect_images(paths, recursive=False)
+        except ImagePathError as error:
+            messagebox.showwarning("OCR", t(error.key, **error.kwargs))
+            return
         except Exception as error:  # noqa: BLE001
             messagebox.showwarning("OCR", str(error))
             return
@@ -377,6 +402,20 @@ class App(tk.Tk):
         self.log.insert(tk.END, message.rstrip() + "\n")
         self.log.see(tk.END)
         self.log.configure(state=tk.DISABLED)
+
+
+def decode_drop_path(item: object) -> Path:
+    """Convert a windnd drop entry (str or bytes) into a Path."""
+    if isinstance(item, bytes):
+        for encoding in (sys.getfilesystemencoding(), "utf-8", "mbcs", "cp1251"):
+            if not encoding:
+                continue
+            try:
+                return Path(item.decode(encoding))
+            except UnicodeDecodeError:
+                continue
+        return Path(item.decode("utf-8", errors="replace"))
+    return Path(str(item))
 
 
 def load_ui_pref() -> str:

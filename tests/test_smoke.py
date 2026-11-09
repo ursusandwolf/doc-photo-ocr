@@ -53,6 +53,22 @@ class PreprocessSmokeTests(unittest.TestCase):
         self.assertEqual(ocr.local_models_present(), any(MODELS_DIR.glob("*.pth")))
 
 
+class DropPathSmokeTests(unittest.TestCase):
+    def test_decode_drop_path_str_and_bytes(self) -> None:
+        import gui
+
+        sample = ROOT / "resources" / "zayavlenie_otpusk.png"
+        self.assertEqual(gui.decode_drop_path(str(sample)), sample)
+        self.assertEqual(gui.decode_drop_path(str(sample).encode("utf-8")), sample)
+
+    def test_collect_images_via_image_paths(self) -> None:
+        from image_paths import collect_images
+
+        folder = ROOT / "resources"
+        names = [item.name for item in collect_images([folder])]
+        self.assertIn("zayavlenie_otpusk.png", names)
+
+
 class UiLangSmokeTests(unittest.TestCase):
     def test_ui_english_help_and_errors(self) -> None:
         from i18n import set_ui_lang, t

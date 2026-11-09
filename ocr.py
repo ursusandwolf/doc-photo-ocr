@@ -32,9 +32,11 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 
 from i18n import get_ui_lang, set_ui_lang, t
+from image_paths import SUPPORTED_EXTENSIONS
+from image_paths import PathError as ImagePathError
+from image_paths import collect_images as collect_image_paths
 from preprocess import find_document_corners, preprocess
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 DEFAULT_LANGUAGES = "ru+en"
 DEFAULT_OUTPUT = Path("result.txt")
 MODEL_DIR = Path(__file__).resolve().parent / "models"
@@ -168,47 +170,13 @@ def run(args: argparse.Namespace) -> None:
 
 def collect_images(paths: Sequence[Path], *, recursive: bool = False) -> list[Path]:
     """Collect unique images from files and folders in stable order."""
-    images: list[Path] = []
-    for path in paths:
-        if not path.exists():
-            raise OcrError(t("err.path_missing", path=path))
-        if path.is_file():
-            if path.suffix.lower() in SUPPORTED_EXTENSIONS:
-                images.append(path)
-            else:
-                ext = path.suffix.lower() or t("msg.no_extension")
-                raise OcrError(
-                    t(
-                        "err.bad_format",
-                        ext=ext,
-                        allowed=", ".join(sorted(SUPPORTED_EXTENSIONS)),
-                    )
-                )
-            continue
-        if path.is_dir():
-            images.extend(list_images_in_directory(path, recursive=recursive))
-            continue
-        raise OcrError(t("err.not_file_or_dir", path=path))
-
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for image in images:
-        key = str(image.resolve()).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(image)
-    return unique
-
-
-def list_images_in_directory(directory: Path, *, recursive: bool) -> list[Path]:
-    iterator = directory.rglob("*") if recursive else directory.iterdir()
-    found = [
-        child
-        for child in iterator
-        if child.is_file() and child.suffix.lower() in SUPPORTED_EXTENSIONS
-    ]
-    return sorted(found, key=lambda item: str(item).lower())
+    try:
+        return collect_image_paths(paths, recursive=recursive)
+    except ImagePathError as error:
+        kwargs = dict(error.kwargs)
+        if error.key == "err.bad_format" and kwargs.get("ext") == "none":
+            kwargs["ext"] = t("msg.no_extension")
+        raise OcrError(t(error.key, **kwargs)) from error
 
 
 def write_per_file_results(
