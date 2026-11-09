@@ -147,6 +147,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.models_ready_log": "Модели готовы. Дальше программа работает офлайн.",
         "gui.need_models_first": "Сначала загрузите модели.",
         "gui.files_count": "Файлов: {count}",
+        "gui.progress": "Прогресс",
+        "gui.progress_file": "{current}/{total}",
         "gui.saved": "Текст сохранён: {path}",
     },
     "en": {
@@ -282,6 +284,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.models_ready_log": "Models are ready. The app works offline after this.",
         "gui.need_models_first": "Download models first.",
         "gui.files_count": "Files: {count}",
+        "gui.progress": "Progress",
+        "gui.progress_file": "{current}/{total}",
         "gui.saved": "Text saved: {path}",
     },
 }

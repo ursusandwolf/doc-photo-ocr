@@ -97,6 +97,22 @@ class TextLayoutSmokeTests(unittest.TestCase):
             "Прошу предоставить отпуск\nСогласно графику",
         )
 
+    def test_nearby_rows_do_not_mix_when_sorted_by_x(self) -> None:
+        # Two close rows: loose center matching used to merge them and scramble order.
+        lines = (
+            ocr.TextLine("Прошу", 0.9, ((10, 100), (70, 100), (70, 128), (10, 128))),
+            ocr.TextLine("предоставить", 0.9, ((80, 100), (200, 100), (200, 128), (80, 128))),
+            ocr.TextLine("мне", 0.9, ((210, 100), (250, 100), (250, 128), (210, 128))),
+            ocr.TextLine("15.07.2025", 0.9, ((10, 136), (120, 136), (120, 164), (10, 164))),
+            ocr.TextLine("по", 0.9, ((130, 136), (160, 136), (160, 164), (130, 164))),
+            ocr.TextLine("28.07.2025", 0.9, ((170, 136), (290, 136), (290, 164), (170, 164))),
+        )
+        text = ocr.document_text(ocr.RecognizedDocument(Path("x.png"), lines))
+        self.assertEqual(
+            text,
+            "Прошу предоставить мне\n15.07.2025 по 28.07.2025",
+        )
+
 
 class BatchPathSmokeTests(unittest.TestCase):
     def test_collect_images_from_file_and_folder(self) -> None:

@@ -12,6 +12,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -48,6 +49,8 @@ class App(tk.Tk):
         self.status_python = tk.StringVar()
         self.status_libs = tk.StringVar()
         self.status_models = tk.StringVar()
+        self.progress_value = tk.DoubleVar(value=0)
+        self.progress_text = tk.StringVar(value="")
         self._busy = False
         self._last_result: Optional[Path] = None
         self._last_task_key: Optional[str] = None
@@ -126,6 +129,18 @@ class App(tk.Tk):
         self.btn_open = ttk.Button(out, command=self.on_open_result, state=tk.DISABLED)
         self.btn_open.pack(side=tk.LEFT, padx=(8, 0))
 
+        progress = ttk.Frame(self.root_frame)
+        progress.pack(fill=tk.X, pady=(8, 0))
+        self.progress_label = ttk.Label(progress, textvariable=self.progress_text, width=8)
+        self.progress_label.pack(side=tk.RIGHT)
+        self.progress_bar = ttk.Progressbar(
+            progress,
+            mode="determinate",
+            variable=self.progress_value,
+            maximum=1,
+        )
+        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
         self.log_frame = ttk.LabelFrame(self.root_frame, padding=4)
         self.log_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self.log = scrolledtext.ScrolledText(self.log_frame, height=12, wrap=tk.WORD)
@@ -147,6 +162,8 @@ class App(tk.Tk):
         self.result_label.configure(text=t("gui.result"))
         self.btn_open.configure(text=t("gui.open"))
         self.log_frame.configure(text=t("gui.log"))
+        if not self._busy:
+            self.progress_text.set(t("gui.progress"))
         self.refresh_status()
 
     def on_language_change(self, _event: object = None) -> None:
@@ -294,6 +311,8 @@ class App(tk.Tk):
 
     def _on_worker_done(self, title_key: str) -> None:
         self._busy = False
+        if title_key == "gui.task_ocr":
+            self._set_progress(self.progress_bar["maximum"], int(self.progress_bar["maximum"]))
         title = t(title_key)
         self.append_log(t("gui.done", title=title))
         self.refresh_status()
@@ -302,6 +321,8 @@ class App(tk.Tk):
 
     def _on_worker_error(self, title_key: str, error: Exception) -> None:
         self._busy = False
+        if title_key == "gui.task_ocr":
+            self._reset_progress()
         title = t(title_key)
         self.append_log(t("gui.error", title=title, error=error))
         self.refresh_status()
@@ -379,20 +400,51 @@ class App(tk.Tk):
         if not models_ready():
             raise RuntimeError(t("gui.need_models_first"))
 
-        command = [
-            str(VENV_PYTHON),
-            str(OCR_SCRIPT),
-            "--ui",
-            get_ui_lang(),
-            "-o",
-            str(output),
-            *[str(path) for path in images],
-        ]
-        self._log_threadsafe(t("gui.files_count", count=len(images)))
-        run_checked(command, self._log_threadsafe, cwd=APP_DIR)
+        total = len(images)
+        self.after(0, lambda: self._set_progress(0, total))
+        self._log_threadsafe(t("gui.files_count", count=total))
+
+        blocks: list[str] = []
+        with tempfile.TemporaryDirectory(prefix="doc-photo-ocr-") as temp_dir:
+            temp_root = Path(temp_dir)
+            for index, image in enumerate(images, start=1):
+                temp_out = temp_root / f"part_{index}.txt"
+                command = [
+                    str(VENV_PYTHON),
+                    str(OCR_SCRIPT),
+                    "--ui",
+                    get_ui_lang(),
+                    "-o",
+                    str(temp_out),
+                    str(image),
+                ]
+                run_checked(command, self._log_threadsafe, cwd=APP_DIR)
+                part = temp_out.read_text(encoding="utf-8").strip()
+                if total == 1:
+                    blocks.append(part)
+                else:
+                    blocks.append(f"=== {image.name} ===\n{part}")
+                self.after(0, lambda done=index, max_count=total: self._set_progress(done, max_count))
+
+        text = "\n\n".join(blocks).rstrip() + "\n"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text, encoding="utf-8")
         self._last_result = output
         self.after(0, lambda: self.btn_open.configure(state=tk.NORMAL))
         self._log_threadsafe(t("gui.saved", path=output))
+
+    def _set_progress(self, value: float, maximum: int) -> None:
+        maximum = max(1, int(maximum))
+        self.progress_bar.configure(maximum=maximum)
+        self.progress_value.set(value)
+        self.progress_text.set(
+            t("gui.progress_file", current=int(value), total=maximum)
+        )
+
+    def _reset_progress(self) -> None:
+        self.progress_bar.configure(maximum=1)
+        self.progress_value.set(0)
+        self.progress_text.set(t("gui.progress"))
 
     def _log_threadsafe(self, message: str) -> None:
         self.after(0, lambda: self.append_log(message))

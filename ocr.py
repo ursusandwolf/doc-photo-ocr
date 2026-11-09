@@ -40,9 +40,9 @@ from preprocess import find_document_corners, preprocess
 DEFAULT_LANGUAGES = "ru+en"
 DEFAULT_OUTPUT = Path("result.txt")
 MODEL_DIR = Path(__file__).resolve().parent / "models"
-# Fallback when a box has almost zero height; real threshold uses box height.
-LINE_GROUP_PIXELS = 15
-LINE_GROUP_HEIGHT_RATIO = 0.6
+# Line clustering: prefer vertical overlap; center distance is a fallback.
+MIN_VERTICAL_OVERLAP_RATIO = 0.5
+MAX_CENTER_Y_RATIO = 0.35
 
 # EasyOCR stores detection/recognition weights under models/.
 # Without .pth files we fail early with a clear offline error.
@@ -366,29 +366,65 @@ def box_height(line: TextLine) -> int:
     return max(1, box_bottom(line) - box_top(line))
 
 
-def same_text_row(anchor: TextLine, candidate: TextLine) -> bool:
-    """True when two boxes sit on the same visual text line."""
-    threshold = max(
-        LINE_GROUP_PIXELS,
-        LINE_GROUP_HEIGHT_RATIO * max(box_height(anchor), box_height(candidate)),
-    )
-    return abs(box_center_y(anchor) - box_center_y(candidate)) <= threshold
+def vertical_overlap_ratio(a: TextLine, b: TextLine) -> float:
+    """overlap_height / min(heights). 1.0 means fully nested on the Y axis."""
+    top = max(box_top(a), box_top(b))
+    bottom = min(box_bottom(a), box_bottom(b))
+    overlap = max(0, bottom - top)
+    return overlap / float(min(box_height(a), box_height(b)))
+
+
+def row_median_height(row: Sequence[TextLine]) -> float:
+    heights = sorted(box_height(item) for item in row)
+    mid = len(heights) // 2
+    if not heights:
+        return 1.0
+    if len(heights) % 2:
+        return float(heights[mid])
+    return (heights[mid - 1] + heights[mid]) / 2.0
+
+
+def row_mean_center_y(row: Sequence[TextLine]) -> float:
+    return sum(box_center_y(item) for item in row) / float(len(row))
+
+
+def fits_text_row(row: Sequence[TextLine], candidate: TextLine) -> bool:
+    """True when candidate belongs on this visual text line."""
+    best_overlap = max(vertical_overlap_ratio(item, candidate) for item in row)
+    if best_overlap >= MIN_VERTICAL_OVERLAP_RATIO:
+        return True
+    median_h = row_median_height(row)
+    center_gap = abs(row_mean_center_y(row) - box_center_y(candidate))
+    return center_gap <= MAX_CENTER_Y_RATIO * median_h
 
 
 def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
-    """Group word boxes into rows, then left-to-right within each row."""
+    """Cluster word boxes by vertical overlap, then left-to-right in each row."""
     if not lines:
         return []
 
-    ordered = sorted(lines, key=lambda item: (box_top(item), box_left(item)))
-    rows: list[list[TextLine]] = [[ordered[0]]]
-    for item in ordered[1:]:
-        if same_text_row(rows[-1][0], item):
-            rows[-1].append(item)
-        else:
+    ordered = sorted(lines, key=lambda item: (box_center_y(item), box_left(item)))
+    rows: list[list[TextLine]] = []
+    for item in ordered:
+        best_index = -1
+        best_score = -1.0
+        for index, row in enumerate(rows):
+            if not fits_text_row(row, item):
+                continue
+            score = max(vertical_overlap_ratio(existing, item) for existing in row)
+            # Prefer stronger overlap; break ties with closer row center.
+            score += 1.0 / (1.0 + abs(row_mean_center_y(row) - box_center_y(item)))
+            if score > best_score:
+                best_score = score
+                best_index = index
+        if best_index < 0:
             rows.append([item])
+        else:
+            rows[best_index].append(item)
 
-    return [sorted(row, key=box_left) for row in rows]
+    rows = [sorted(row, key=box_left) for row in rows]
+    rows.sort(key=row_mean_center_y)
+    return rows
 
 
 def render_documents(documents: Sequence[RecognizedDocument]) -> str:
