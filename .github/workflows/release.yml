@@ -54,6 +54,9 @@ jobs:
           }
           Copy-Item -Recurse runtime (Join-Path $stage "runtime")
           Copy-Item -Recurse dicts (Join-Path $stage "dicts")
+          if (Test-Path docs) {
+            Copy-Item -Recurse docs (Join-Path $stage "docs")
+          }
           if (Test-Path samples) {
             Copy-Item -Recurse samples (Join-Path $stage "samples")
           }

@@ -37,7 +37,7 @@ from i18n import get_ui_lang, set_ui_lang, t
 from image_paths import SUPPORTED_EXTENSIONS
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images as collect_image_paths
-from preprocess import find_document_corners, preprocess
+from preprocess import find_document_corners, invert_image, preprocess
 from spellcheck import correct_text
 
 DEFAULT_LANGUAGES = "ru"
@@ -98,6 +98,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--no-preprocess",
         action="store_true",
         help=t("cli.no_preprocess_help"),
+    )
+    parser.add_argument(
+        "--invert",
+        action="store_true",
+        help=t("cli.invert_help"),
     )
     parser.add_argument(
         "--no-spell",
@@ -182,6 +187,7 @@ def run(args: argparse.Namespace) -> None:
                 reader,
                 image_path,
                 preprocess_image=not args.no_preprocess,
+                invert=bool(args.invert),
             )
         )
 
@@ -317,6 +323,7 @@ def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
         raise OcrError(t("err.need_input"))
     output = Path(request.get("output") or DEFAULT_OUTPUT)
     no_preprocess = bool(request.get("no_preprocess", False))
+    invert = bool(request.get("invert", False))
     debug = bool(request.get("debug", False))
     per_file = bool(request.get("per_file", False))
     spell = bool(request.get("spell", True))
@@ -352,6 +359,7 @@ def handle_worker_recognize(reader: Any, request: dict[str, Any]) -> None:
                 reader,
                 image_path,
                 preprocess_image=not no_preprocess,
+                invert=invert,
                 on_row=emit_line,
                 on_rows=emit_rows,
             )
@@ -399,6 +407,7 @@ def recognize_file(
     path: Path,
     *,
     preprocess_image: bool,
+    invert: bool = False,
     on_row: Optional[Callable[[str], None]] = None,
     on_rows: Optional[Callable[[int], None]] = None,
 ) -> RecognizedDocument:
@@ -408,6 +417,8 @@ def recognize_file(
     on_row is called after each row is recognized (may be empty).
     """
     image = load_image(path)
+    if invert:
+        image = invert_image(image)
     try:
         prepared = preprocess(image) if preprocess_image else image
     except cv2.error as error:

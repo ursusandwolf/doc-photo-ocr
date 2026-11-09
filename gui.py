@@ -22,6 +22,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable, Optional, Sequence, Union
 
+from PIL import Image, ImageGrab
+
 from i18n import get_ui_lang, set_ui_lang, t
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images
@@ -139,6 +141,7 @@ class OcrEngine:
         spell: bool = True,
         fix_caps: bool = True,
         strip_junk: bool = False,
+        invert: bool = False,
         on_file: Callable[[int, int, str], None],
         on_line: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
@@ -156,6 +159,7 @@ class OcrEngine:
             "spell": spell,
             "fix_caps": fix_caps,
             "strip_junk": strip_junk,
+            "invert": invert,
         }
         with self._lock:
             self._process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
@@ -238,6 +242,7 @@ class App(tk.Tk):
         self.spell_enabled = tk.BooleanVar(value=True)
         self.fix_caps_enabled = tk.BooleanVar(value=True)
         self.strip_junk_enabled = tk.BooleanVar(value=False)
+        self.invert_enabled = tk.BooleanVar(value=False)
         self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.ui_theme = tk.StringVar(value=load_theme_pref())
         self.status_python = tk.StringVar()
@@ -265,6 +270,9 @@ class App(tk.Tk):
         self.apply_language()
         self._paint_status_placeholder()
         self._setup_drag_and_drop()
+        self.bind("<Control-v>", self.on_paste_image)
+        self.bind("<Control-V>", self.on_paste_image)
+        self.bind("<Shift-Insert>", self.on_paste_image)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(50, self._boot)
         self.after(200, self._poll_drop_queue)
@@ -348,6 +356,11 @@ class App(tk.Tk):
             variable=self.strip_junk_enabled,
         )
         self.strip_junk_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.invert_check = ttk.Checkbutton(
+            buttons,
+            variable=self.invert_enabled,
+        )
+        self.invert_check.pack(side=tk.LEFT, padx=(12, 0))
 
         out = ttk.Frame(self.root_frame)
         out.pack(fill=tk.X, pady=4)
@@ -359,6 +372,8 @@ class App(tk.Tk):
         self.btn_browse_out.pack(side=tk.LEFT)
         self.btn_open = ttk.Button(out, command=self.on_open_result, state=tk.DISABLED)
         self.btn_open.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_copy = ttk.Button(out, command=self.on_copy_result, state=tk.DISABLED)
+        self.btn_copy.pack(side=tk.LEFT, padx=(8, 0))
 
         progress = ttk.Frame(self.root_frame)
         progress.pack(fill=tk.X, pady=(8, 0))
@@ -399,8 +414,10 @@ class App(tk.Tk):
         self.spell_check.configure(text=t("gui.spell"))
         self.fix_caps_check.configure(text=t("gui.fix_caps"))
         self.strip_junk_check.configure(text=t("gui.strip_junk"))
+        self.invert_check.configure(text=t("gui.invert"))
         self.result_label.configure(text=t("gui.result"))
         self.btn_open.configure(text=t("gui.open"))
+        self.btn_copy.configure(text=t("gui.copy"))
         self.log_frame.configure(text=t("gui.log"))
         if not self._busy:
             self.progress_text.set(t("gui.progress"))
@@ -684,6 +701,31 @@ class App(tk.Tk):
         if self._last_result and self._last_result.exists():
             os.startfile(self._last_result)  # type: ignore[attr-defined]
 
+    def on_copy_result(self) -> None:
+        path = self._last_result
+        if path is None or not path.exists():
+            candidate = Path(self.output_path.get().strip() or DEFAULT_OUTPUT)
+            path = candidate if candidate.exists() else None
+        if path is None:
+            messagebox.showinfo("OCR", t("gui.copy_empty"))
+            return
+        text = path.read_text(encoding="utf-8")
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.append_log(t("gui.copied"))
+
+    def on_paste_image(self, _event: object = None) -> str:
+        """Recognize an image currently on the Windows clipboard (Win+Shift+S)."""
+        if self._busy or self._engine_starting:
+            return "break"
+        path = save_clipboard_image(APP_DIR / ".clipboard_paste.png")
+        if path is None:
+            messagebox.showinfo("OCR", t("gui.paste_no_image"))
+            return "break"
+        self.append_log(t("gui.paste_ok", path=path))
+        self.process_paths([path])
+        return "break"
+
     def process_paths(self, paths: Sequence[Path]) -> None:
         if self._busy or self._engine_starting:
             return
@@ -844,12 +886,14 @@ class App(tk.Tk):
             spell=bool(self.spell_enabled.get()),
             fix_caps=bool(self.fix_caps_enabled.get()),
             strip_junk=bool(self.strip_junk_enabled.get()),
+            invert=bool(self.invert_enabled.get()),
             on_file=on_file,
             on_line=on_line,
             on_rows=on_rows,
         )
         self._last_result = output
         self.after(0, lambda: self.btn_open.configure(state=tk.NORMAL))
+        self.after(0, lambda: self.btn_copy.configure(state=tk.NORMAL))
         self._log_threadsafe(t("gui.saved", path=output))
 
     def _start_wait_timer(self, message_key: str) -> None:
@@ -950,6 +994,31 @@ def decode_drop_path(item: object) -> Path:
                 continue
         return Path(item.decode("utf-8", errors="replace"))
     return Path(str(item))
+
+
+def save_clipboard_image(dest: Path) -> Optional[Path]:
+    """Persist a clipboard bitmap (or return an existing clipboard image path)."""
+    content = ImageGrab.grabclipboard()
+    if content is None:
+        return None
+    if isinstance(content, list):
+        for item in content:
+            path = Path(str(item))
+            if path.is_file() and path.suffix.lower() in {
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".webp",
+                ".bmp",
+            }:
+                return path
+        return None
+    if isinstance(content, Image.Image):
+        image = content.convert("RGB") if content.mode != "RGB" else content
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        image.save(dest, format="PNG")
+        return dest
+    return None
 
 
 def load_ui_pref() -> str:

@@ -53,6 +53,15 @@ class PreprocessSmokeTests(unittest.TestCase):
     def test_local_models_check_matches_disk(self) -> None:
         self.assertEqual(ocr.local_models_present(), any(MODELS_DIR.glob("*.pth")))
 
+    def test_invert_image_flips_pixels(self) -> None:
+        from preprocess import invert_image
+
+        page = np.zeros((4, 4, 3), np.uint8)
+        page[0, 0] = (10, 20, 30)
+        flipped = invert_image(page)
+        self.assertEqual(tuple(flipped[0, 0]), (245, 235, 225))
+        self.assertTrue(np.array_equal(invert_image(flipped), page))
+
 
 class DropPathSmokeTests(unittest.TestCase):
     def test_decode_drop_path_str_and_bytes(self) -> None:

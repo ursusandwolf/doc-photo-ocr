@@ -34,7 +34,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 
 ## Features
 
-- GUI: one-click setup, drag-and-drop, RU/EN UI, light / gray / dark themes.
+- GUI: one-click setup, drag-and-drop, Ctrl+V paste, copy result, RU/EN UI, light / gray / dark themes.
 - CLI batch mode: files, folders, `--per-file`, `--recursive`.
 - Formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` (Cyrillic paths OK).
 - OCR language default: Russian (`--lang ru`; add `+en` when needed).
@@ -106,7 +106,7 @@ Selection policy worth encoding later:
 - **Fast / small path:** Tesseract when the user opts in or when install size matters more than photo robustness.
 - **Quality path:** run A, score; if below threshold, offer B and keep the better text (line- or document-level vote).
 
-Do not add Strategy/Factory until a second backend is scheduled — the DTOs and `OcrError` boundary are enough for now.
+Do not add Strategy/Factory until a second backend is scheduled — the DTOs and `OcrError` boundary are enough for now. Tesseract / dual-engine is **deferred** (not part of the clipboard/invert UX work). Feature map vs [OCR-CopyPastePad](https://github.com/FlyingFathead/OCR-CopyPastePad): [`docs/compare-copypastepad.md`](docs/compare-copypastepad.md) (ideas only — no upstream license to copy code).
 
 ## Design
 

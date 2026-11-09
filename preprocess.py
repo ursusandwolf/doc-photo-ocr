@@ -37,6 +37,11 @@ def preprocess(image: np.ndarray) -> np.ndarray:
     return deskew(contrasted)
 
 
+def invert_image(image: np.ndarray) -> np.ndarray:
+    """Invert pixel values (light <-> dark). Same shape and channel count."""
+    return cv2.bitwise_not(image)
+
+
 def to_gray(image: np.ndarray) -> np.ndarray:
     if image.ndim == 2:
         return image
