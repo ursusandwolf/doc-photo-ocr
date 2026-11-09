@@ -8,3 +8,5 @@ result.txt
 *.debug.txt
 samples/*_result*
 samples/*_result.*
+resources/ocr_smoke.txt
+resources/*.debug.txt
