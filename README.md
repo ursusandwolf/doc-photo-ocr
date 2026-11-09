@@ -23,7 +23,7 @@ UI language defaults to **Russian**. Switch to English in the GUI combo box, or 
 ## For end users (Windows)
 
 1. Download the zip from [Releases](https://github.com/ursusandwolf/doc-photo-ocr/releases) and unpack it.
-2. Run `DocOCR.vbs` (no console) or `DocOCR.bat`.
+2. Run `start.bat` (or `DocOCR.vbs` / `DocOCR.bat`).
 3. If libraries are missing — **Install libraries** (internet once).
 4. If models are missing — **Download models** (internet once).
 5. Drop a photo or folder (or use the buttons) — get `result.txt`.

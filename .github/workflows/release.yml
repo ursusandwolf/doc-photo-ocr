@@ -38,6 +38,7 @@ jobs:
           $files = @(
             "DocOCR.bat",
             "DocOCR.vbs",
+            "start.bat",
             "gui.py",
             "ocr.py",
             "preprocess.py",
