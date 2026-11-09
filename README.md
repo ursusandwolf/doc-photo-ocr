@@ -34,7 +34,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 
 ## Features
 
-- GUI: one-click setup, drag-and-drop, RU/EN UI.
+- GUI: one-click setup, drag-and-drop, RU/EN UI, light / gray / dark themes.
 - CLI batch mode: files, folders, `--per-file`, `--recursive`.
 - Formats: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp` (Cyrillic paths OK).
 - OCR language default: Russian (`--lang ru`; add `+en` when needed).
@@ -74,6 +74,39 @@ What you can change today:
 - CLI: `python ocr.py --lang ru` or `--lang ru+en` (and other EasyOCR codes).
 - GUI worker uses CLI defaults (`DEFAULT_LANGUAGES`) — no model picker in the window.
 - Post-process options (spell, caps, junk) are not OCR models.
+
+## Possible evolution: other OCR engines
+
+The app is **not** plugin-ready yet: EasyOCR is hard-wired in `create_reader` / `read_lines` / the GUI worker. Shared pieces that already help a future split:
+
+- `TextLine` / `RecognizedDocument` — engine-agnostic DTOs
+- `OcrError` + `i18n` keys — one place for user-visible failures
+- `preprocess.py` / `spellcheck.py` — stay outside the engine
+
+A practical next shape (only when a second engine is real pain):
+
+1. Introduce an `OcrEngine` protocol (**Strategy**): `recognize(image) -> list[TextLine]`.
+2. Keep EasyOCR as the default implementation; add Tesseract (or another) behind the same contract.
+3. Factory / CLI–GUI flag picks the engine; worker stays one process per engine if models are heavy.
+4. Optional quality score (% dictionary hits, junk density) → offer **re-run with another engine**, or auto-pick the better pass.
+
+### Choosing an engine by size and speed
+
+Rough CPU / offline profile for this product (photos of A4, not a benchmark suite):
+
+| Engine | Disk / install | Cold start | Page speed | Fit |
+|---|---|---|---|---|
+| **EasyOCR** (current) | ~90+ MB weights + PyTorch | Slow (tens of seconds) | Moderate; cost grows with box count | Phone photos, RU/EN in one reader |
+| **Tesseract** | Smaller tessdata; needs `tesseract.exe` on Windows | Fast | Often faster on clean scans | Scans/PDF-like pages; weaker on skewed photos |
+| **Both (compare)** | Sum of the above | Worst of both if warmed together | 2× recognition time | Retry when score is low; pick higher dictionary agreement |
+
+Selection policy worth encoding later:
+
+- **Default:** EasyOCR (photo-first, already shipped).
+- **Fast / small path:** Tesseract when the user opts in or when install size matters more than photo robustness.
+- **Quality path:** run A, score; if below threshold, offer B and keep the better text (line- or document-level vote).
+
+Do not add Strategy/Factory until a second backend is scheduled — the DTOs and `OcrError` boundary are enough for now.
 
 ## Design
 

@@ -35,6 +35,45 @@ OCR_SCRIPT = APP_DIR / "ocr.py"
 DEFAULT_OUTPUT = APP_DIR / "result.txt"
 RUNTIME_PYTHON = APP_DIR / "runtime" / "python.exe"
 UI_PREF_FILE = APP_DIR / "ui_lang.txt"
+THEME_PREF_FILE = APP_DIR / "ui_theme.txt"
+DEFAULT_THEME = "light"
+THEME_NAMES = ("light", "gray", "dark")
+# Tk theming tokens (clam). Wait label stays red on every theme.
+THEMES: dict[str, dict[str, str]] = {
+    "light": {
+        "bg": "#f0f0f0",
+        "fg": "#1a1a1a",
+        "field": "#ffffff",
+        "button": "#e4e4e4",
+        "button_active": "#d0d0d0",
+        "accent": "#1565c0",
+        "trough": "#cfcfcf",
+        "select": "#c5d8f0",
+        "wait": "#c62828",
+    },
+    "gray": {
+        "bg": "#5a5a5a",
+        "fg": "#f2f2f2",
+        "field": "#454545",
+        "button": "#6e6e6e",
+        "button_active": "#7a7a7a",
+        "accent": "#90caf9",
+        "trough": "#3a3a3a",
+        "select": "#607d8b",
+        "wait": "#ff8a80",
+    },
+    "dark": {
+        "bg": "#1e1e1e",
+        "fg": "#e6e6e6",
+        "field": "#2b2b2b",
+        "button": "#3a3a3a",
+        "button_active": "#4a4a4a",
+        "accent": "#64b5f6",
+        "trough": "#121212",
+        "select": "#37474f",
+        "wait": "#ef5350",
+    },
+}
 MIN_PYTHON = (3, 9)
 TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
 _LIBS_READY_CACHE: Optional[bool] = None
@@ -200,6 +239,7 @@ class App(tk.Tk):
         self.fix_caps_enabled = tk.BooleanVar(value=True)
         self.strip_junk_enabled = tk.BooleanVar(value=False)
         self.ui_lang = tk.StringVar(value=get_ui_lang())
+        self.ui_theme = tk.StringVar(value=load_theme_pref())
         self.status_python = tk.StringVar()
         self.status_libs = tk.StringVar()
         self.status_models = tk.StringVar()
@@ -221,6 +261,7 @@ class App(tk.Tk):
         self._drop_queue: queue.Queue[Union[list[Path], BaseException]] = queue.Queue()
 
         self._build()
+        self.apply_theme()
         self.apply_language()
         self._paint_status_placeholder()
         self._setup_drag_and_drop()
@@ -238,6 +279,17 @@ class App(tk.Tk):
         self.privacy_label.pack(side=tk.LEFT, anchor=tk.W)
         lang_box = ttk.Frame(top)
         lang_box.pack(side=tk.RIGHT)
+        self.theme_label = ttk.Label(lang_box)
+        self.theme_label.pack(side=tk.LEFT)
+        self.theme_combo = ttk.Combobox(
+            lang_box,
+            textvariable=self.ui_theme,
+            values=THEME_NAMES,
+            width=7,
+            state="readonly",
+        )
+        self.theme_combo.pack(side=tk.LEFT, padx=(6, 10))
+        self.theme_combo.bind("<<ComboboxSelected>>", self.on_theme_change)
         self.lang_label = ttk.Label(lang_box)
         self.lang_label.pack(side=tk.LEFT)
         self.lang_combo = ttk.Combobox(
@@ -301,9 +353,8 @@ class App(tk.Tk):
         out.pack(fill=tk.X, pady=4)
         self.result_label = ttk.Label(out)
         self.result_label.pack(side=tk.LEFT)
-        ttk.Entry(out, textvariable=self.output_path).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=6
-        )
+        self.output_entry = ttk.Entry(out, textvariable=self.output_path)
+        self.output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
         self.btn_browse_out = ttk.Button(out, text="…", width=3, command=self.on_pick_output)
         self.btn_browse_out.pack(side=tk.LEFT)
         self.btn_open = ttk.Button(out, command=self.on_open_result, state=tk.DISABLED)
@@ -311,8 +362,6 @@ class App(tk.Tk):
 
         progress = ttk.Frame(self.root_frame)
         progress.pack(fill=tk.X, pady=(8, 0))
-        style = ttk.Style(self)
-        style.configure("Wait.TLabel", foreground="#c62828")
         self.progress_label = ttk.Label(
             progress,
             textvariable=self.progress_text,
@@ -337,6 +386,7 @@ class App(tk.Tk):
     def apply_language(self) -> None:
         self.title(t("gui.title"))
         self.privacy_label.configure(text=t("gui.privacy"))
+        self.theme_label.configure(text=t("gui.theme"))
         self.lang_label.configure(text=t("gui.ui_lang"))
         self.status_frame.configure(text=t("gui.status"))
         self.btn_install.configure(text=t("gui.install"))
@@ -356,11 +406,107 @@ class App(tk.Tk):
             self.progress_text.set(t("gui.progress"))
         self.refresh_status()
 
+    def apply_theme(self) -> None:
+        name = normalize_theme(self.ui_theme.get())
+        self.ui_theme.set(name)
+        palette = THEMES[name]
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        self.configure(bg=palette["bg"])
+        style.configure(
+            ".",
+            background=palette["bg"],
+            foreground=palette["fg"],
+            fieldbackground=palette["field"],
+            troughcolor=palette["trough"],
+            bordercolor=palette["bg"],
+            darkcolor=palette["bg"],
+            lightcolor=palette["bg"],
+        )
+        style.configure("TFrame", background=palette["bg"])
+        style.configure("TLabel", background=palette["bg"], foreground=palette["fg"])
+        style.configure("TLabelframe", background=palette["bg"], foreground=palette["fg"])
+        style.configure(
+            "TLabelframe.Label",
+            background=palette["bg"],
+            foreground=palette["fg"],
+        )
+        style.configure(
+            "TButton",
+            background=palette["button"],
+            foreground=palette["fg"],
+        )
+        style.map(
+            "TButton",
+            background=[("active", palette["button_active"]), ("disabled", palette["bg"])],
+            foreground=[("disabled", palette["fg"])],
+        )
+        style.configure(
+            "TCheckbutton",
+            background=palette["bg"],
+            foreground=palette["fg"],
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", palette["bg"])],
+            foreground=[("disabled", palette["fg"])],
+        )
+        style.configure(
+            "TEntry",
+            fieldbackground=palette["field"],
+            foreground=palette["fg"],
+            insertcolor=palette["fg"],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=palette["field"],
+            foreground=palette["fg"],
+            background=palette["field"],
+            arrowcolor=palette["fg"],
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", palette["field"])],
+            foreground=[("readonly", palette["fg"])],
+            background=[("readonly", palette["field"])],
+        )
+        style.configure(
+            "TProgressbar",
+            background=palette["accent"],
+            troughcolor=palette["trough"],
+        )
+        style.configure(
+            "Wait.TLabel",
+            background=palette["bg"],
+            foreground=palette["wait"],
+        )
+        self.option_add("*TCombobox*Listbox.background", palette["field"])
+        self.option_add("*TCombobox*Listbox.foreground", palette["fg"])
+        self.option_add("*TCombobox*Listbox.selectBackground", palette["select"])
+        self.option_add("*TCombobox*Listbox.selectForeground", palette["fg"])
+        self.log.configure(
+            background=palette["field"],
+            foreground=palette["fg"],
+            insertbackground=palette["fg"],
+            selectbackground=palette["select"],
+            selectforeground=palette["fg"],
+        )
+
     def on_language_change(self, _event: object = None) -> None:
         lang = set_ui_lang(self.ui_lang.get())
         self.ui_lang.set(lang)
         save_ui_pref(lang)
         self.apply_language()
+
+    def on_theme_change(self, _event: object = None) -> None:
+        theme = normalize_theme(self.ui_theme.get())
+        self.ui_theme.set(theme)
+        save_theme_pref(theme)
+        self.apply_theme()
 
     def _setup_drag_and_drop(self) -> None:
         try:
@@ -818,6 +964,27 @@ def load_ui_pref() -> str:
 def save_ui_pref(lang: str) -> None:
     try:
         UI_PREF_FILE.write_text(lang + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def normalize_theme(value: str) -> str:
+    name = (value or "").strip().lower()
+    return name if name in THEMES else DEFAULT_THEME
+
+
+def load_theme_pref() -> str:
+    try:
+        if THEME_PREF_FILE.exists():
+            return normalize_theme(THEME_PREF_FILE.read_text(encoding="utf-8").strip())
+    except OSError:
+        pass
+    return DEFAULT_THEME
+
+
+def save_theme_pref(theme: str) -> None:
+    try:
+        THEME_PREF_FILE.write_text(normalize_theme(theme) + "\n", encoding="utf-8")
     except OSError:
         return
 
