@@ -218,6 +218,14 @@ class SpellcheckSmokeTests(unittest.TestCase):
         self.assertEqual(spellcheck.strip_junk_text("а: б; в!"), "а: б; в!")
         self.assertEqual(spellcheck.strip_junk_text("a  ~  b"), "a b")
 
+    def test_keeps_email_and_hyphenated_email_label(self) -> None:
+        line = "тел. +7 (495) 123-45-67 e-mail: anna@example.com"
+        fixed = spellcheck.correct_text(line, spell=True, fix_caps=True, strip_junk=True)
+        self.assertIn("e-mail:", fixed)
+        self.assertIn("anna@example.com", fixed)
+        self.assertIn("+7 (495) 123-45-67", fixed)
+        self.assertNotIn("email:", fixed)
+
     def test_document_text_respects_no_spell(self) -> None:
         lines = (
             ocr.TextLine(

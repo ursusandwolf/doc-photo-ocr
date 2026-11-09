@@ -53,6 +53,15 @@ EMPTY_PARENS = re.compile(r"\(\s*\)|\[\s*\]")
 # Bare № without a following number is usually noise.
 BARE_NUMERO = re.compile(r"№(?!\s*\d)")
 
+# Protect emails / e-mail labels from junk cleanup and dictionary "fixes".
+EMAIL_ADDRESS = re.compile(
+    r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
+)
+EMAIL_LABEL = re.compile(r"(?i)\b[eе]-?mail\b")
+PHONE_CHUNK = re.compile(
+    r"\+?\d[\d\s\-()]{5,}\d",
+)
+
 # Always keep these office/OCR tokens even if missing from frequency lists.
 WHITELIST = {
     "ооо",
@@ -68,6 +77,10 @@ WHITELIST = {
     "contract",
     "г",
     "гг",
+    "email",
+    "e-mail",
+    "е-mail",
+    "mail",
 }
 
 
@@ -114,10 +127,30 @@ def has_unexpected_caps(token: str) -> bool:
     )
 
 
-def strip_junk_text(text: str) -> str:
-    """Remove OCR garbage characters and tidy leftover spacing/punctuation."""
-    if not text:
-        return text
+def _mask_protected_spans(text: str) -> tuple[str, list[str]]:
+    """Replace emails/phones with placeholders so cleanup cannot break them."""
+    saved: list[str] = []
+
+    def stash(match: re.Match[str]) -> str:
+        saved.append(match.group(0))
+        # Private-use markers — not letters, not in ALWAYS_JUNK.
+        return f"\ue000{len(saved) - 1}\ue001"
+
+    masked = EMAIL_ADDRESS.sub(stash, text)
+    masked = EMAIL_LABEL.sub(stash, masked)
+    masked = PHONE_CHUNK.sub(stash, masked)
+    return masked, saved
+
+
+def _unmask_protected_spans(text: str, saved: list[str]) -> str:
+    restored = text
+    for index, original in enumerate(saved):
+        restored = restored.replace(f"\ue000{index}\ue001", original)
+    return restored
+
+
+def _strip_junk_raw(text: str) -> str:
+    """Junk cleanup without email/phone masking (caller masks first)."""
     cleaned_chars: list[str] = []
     for char in text:
         if char in ALWAYS_JUNK:
@@ -126,7 +159,6 @@ def strip_junk_text(text: str) -> str:
             continue
         cleaned_chars.append(char)
     cleaned = "".join(cleaned_chars)
-    # Drop punctuation clusters like !"№;%::?*( first.
     cleaned = NOISE_RUN.sub(" ", cleaned)
     cleaned = ISOLATED_NOISE.sub("", cleaned)
     cleaned = BARE_NUMERO.sub("", cleaned)
@@ -138,6 +170,14 @@ def strip_junk_text(text: str) -> str:
     cleaned = MULTI_SPACE.sub(" ", cleaned)
     lines = [line.strip(" \t") for line in cleaned.splitlines()]
     return "\n".join(lines).strip()
+
+
+def strip_junk_text(text: str) -> str:
+    """Remove OCR garbage characters; keep e-mail addresses and phone numbers."""
+    if not text:
+        return text
+    masked, saved = _mask_protected_spans(text)
+    return _unmask_protected_spans(_strip_junk_raw(masked), saved)
 
 
 def correct_text(
@@ -153,29 +193,33 @@ def correct_text(
     if not spell and not fix_caps and not strip_junk:
         return text
 
-    working = strip_junk_text(text) if strip_junk else text
-    if not spell and not fix_caps:
-        return working
+    masked, saved = _mask_protected_spans(text)
+    working = _strip_junk_raw(masked) if strip_junk else masked
 
-    russian, english = get_spellcheckers() if spell else (None, None)
-    parts: list[str] = []
-    last = 0
-    for match in WORD_PATTERN.finditer(working):
-        parts.append(working[last : match.start()])
-        parts.append(
-            correct_token(
-                match.group(0),
-                russian,
-                english,
-                spell=spell,
-                fix_caps=fix_caps,
+    if spell or fix_caps:
+        russian, english = get_spellcheckers() if spell else (None, None)
+        parts: list[str] = []
+        last = 0
+        for match in WORD_PATTERN.finditer(working):
+            parts.append(working[last : match.start()])
+            token = match.group(0)
+            # Placeholders use § digits § — skip letter tokens only.
+            parts.append(
+                correct_token(
+                    token,
+                    russian,
+                    english,
+                    spell=spell,
+                    fix_caps=fix_caps,
+                )
             )
-        )
-        last = match.end()
-    parts.append(working[last:])
-    polished = "".join(parts)
-    # Second pass: caps/spell may leave spaces before punctuation tidy again.
-    return strip_junk_text(polished) if strip_junk else polished
+            last = match.end()
+        parts.append(working[last:])
+        working = "".join(parts)
+
+    restored = _unmask_protected_spans(working, saved)
+    # Final spacing tidy with fresh masking so restored emails stay intact.
+    return strip_junk_text(restored) if strip_junk else restored
 
 
 def correct_token(
@@ -198,13 +242,18 @@ def correct_token(
     lower = working.lower()
     if lower in WHITELIST:
         return working
+    # Keep hyphenated compounds like e-mail; dictionary often returns "email".
+    if "-" in working and lower.replace("-", "") in WHITELIST:
+        return working
     if lower in russian or lower in english:
         return working
 
     suggestion = best_correction(lower, russian, english)
     if not suggestion or suggestion == lower:
         return working
-    # After caps-normalization prefer lowercase unless the token stayed titled/ALLCAPS.
+    # Do not drop hyphens from short compounds (e-mail → email).
+    if "-" in working and suggestion == lower.replace("-", ""):
+        return working
     return apply_case(working, suggestion)
 
 
