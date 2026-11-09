@@ -75,6 +75,44 @@ class EngineSmokeTests(unittest.TestCase):
         self.assertEqual(lines[0].box[0], (10, 20))
         self.assertEqual(lines[1].text, "мир")
 
+    def test_group_tesseract_native_rows_uses_line_ids(self) -> None:
+        from engines import group_tesseract_native_rows
+
+        data = {
+            "text": ["Left", "Right", "Next"],
+            "conf": ["90", "90", "90"],
+            "left": [10, 200, 10],
+            "top": [20, 22, 80],
+            "width": [40, 40, 40],
+            "height": [16, 16, 16],
+            "block_num": [1, 1, 1],
+            "par_num": [1, 1, 1],
+            "line_num": [1, 1, 2],
+        }
+        rows = group_tesseract_native_rows(data)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([part.text for part in rows[0]], ["Left", "Right"])
+        self.assertEqual([part.text for part in rows[1]], ["Next"])
+
+    def test_group_tesseract_native_rows_merges_split_line_ids(self) -> None:
+        from engines import group_tesseract_native_rows
+
+        # Same visual row, different line_num — refine should merge.
+        data = {
+            "text": ["Кол-во", "2", "Цена"],
+            "conf": ["90", "90", "90"],
+            "left": [10, 120, 220],
+            "top": [20, 21, 20],
+            "width": [50, 20, 40],
+            "height": [16, 14, 16],
+            "block_num": [1, 1, 1],
+            "par_num": [1, 1, 1],
+            "line_num": [1, 2, 3],
+        }
+        rows = group_tesseract_native_rows(data)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual([part.text for part in rows[0]], ["Кол-во", "2", "Цена"])
+
     def test_tesseract_missing_binary_raises(self) -> None:
         from engines import TesseractEngine, ensure_tesseract_available
 
@@ -206,7 +244,8 @@ class OfflineGuardTests(unittest.TestCase):
             import tesseract_setup
 
             importlib.reload(tesseract_setup)
-            self.assertFalse(tesseract_setup.is_tesseract_ready())
+            # Ready or not depends on the machine; import must stay offline.
+            _ = tesseract_setup.is_tesseract_ready()
             self.assertEqual(calls, [])
         finally:
             urllib.request.urlopen = original  # type: ignore[assignment]
@@ -378,6 +417,30 @@ class TextLayoutSmokeTests(unittest.TestCase):
                 any(n.startswith("Left") for n in names) and any(n.startswith("Right") for n in names),
                 texts,
             )
+
+    def test_estimate_residual_skew_from_tilted_centers(self) -> None:
+        # Axis-aligned boxes whose centers still follow a ~5° slope.
+        lines = (
+            ocr.TextLine("a", 0.9, ((10, 100), (110, 100), (110, 120), (10, 120))),
+            ocr.TextLine("b", 0.9, ((210, 117), (310, 117), (310, 137), (210, 137))),
+            ocr.TextLine("c", 0.9, ((410, 135), (510, 135), (510, 155), (410, 155))),
+            ocr.TextLine("d", 0.9, ((610, 152), (710, 152), (710, 172), (610, 172))),
+        )
+        flat = [ocr.flatten_box(item, skew_degrees=0.0, origin=(360.0, 136.0)) for item in lines]
+        residual = ocr.estimate_residual_skew_degrees(flat)
+        self.assertGreater(abs(residual), 1.0)
+        self.assertLess(abs(residual), 15.0)
+
+    def test_residual_skew_keeps_sloped_row_together(self) -> None:
+        # Centers rise ~5° left→right; without residual pass they can split.
+        lines = (
+            ocr.TextLine("One", 0.9, ((10, 100), (90, 100), (90, 128), (10, 128))),
+            ocr.TextLine("Two", 0.9, ((200, 116), (280, 116), (280, 144), (200, 144))),
+            ocr.TextLine("Three", 0.9, ((390, 133), (490, 133), (490, 161), (390, 161))),
+        )
+        rows = ocr.group_lines_into_rows(lines)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual([part.text for part in rows[0]], ["One", "Two", "Three"])
 
     def test_parse_easyocr_results_skips_empty(self) -> None:
         raw = [

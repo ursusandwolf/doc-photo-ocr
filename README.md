@@ -37,7 +37,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 
 ### GUI
 
-- One-window setup: **Install libraries**, **Download models**, **Install Tesseract**, status lines for Python / libs / models / Tesseract.
+- One-window setup: **Install libraries**, **Download models**, **Install Tesseract**; bottom status bar (green = ready, red = missing).
 - Drag-and-drop (after `windnd` install), file/folder pickers, **Ctrl+V** clipboard image paste.
 - Copy result to clipboard; open result file.
 - Engine combo: `easyocr` (default) or `tesseract` (restarts the OCR worker; prompts to install if missing).
@@ -80,8 +80,8 @@ flowchart LR
 
 1. [`preprocess.py`](preprocess.py) — alignment/contrast (disable with `--no-preprocess`).
 2. **Detect** (CRAFT) — text boxes on the page.
-3. Boxes are clustered into rows ([`read_lines`](ocr.py)).
-4. **Recognize** (CRNN) — text per row.
+3. Boxes are clustered into rows ([`group_lines_into_rows`](ocr.py)): page skew + residual tilt, column gutters, adaptive overlap; Tesseract seeds from native `line_num` then refines the same way.
+4. **Recognize** (CRNN) — text per row (L→R sort; debug log if order changed).
 5. Post-process in [`spellcheck.py`](spellcheck.py).
 
 Detect and recognize use **different weights**, but always run **together** in one `easyocr.Reader`. There is no GUI switch for “detect only” or an alternate model.

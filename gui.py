@@ -64,10 +64,13 @@ THEMES: dict[str, dict[str, str]] = {
         "field": "#ffffff",
         "button": "#e4e4e4",
         "button_active": "#d0d0d0",
+        "button_disabled": "#bdbdbd",
         "accent": "#1565c0",
         "trough": "#cfcfcf",
         "select": "#c5d8f0",
         "wait": "#c62828",
+        "ok": "#2e7d32",
+        "bad": "#c62828",
     },
     "gray": {
         "bg": "#5a5a5a",
@@ -75,10 +78,13 @@ THEMES: dict[str, dict[str, str]] = {
         "field": "#454545",
         "button": "#6e6e6e",
         "button_active": "#7a7a7a",
+        "button_disabled": "#8a8a8a",
         "accent": "#90caf9",
         "trough": "#3a3a3a",
         "select": "#607d8b",
         "wait": "#ff8a80",
+        "ok": "#81c784",
+        "bad": "#ff8a80",
     },
     "dark": {
         "bg": "#1e1e1e",
@@ -86,10 +92,13 @@ THEMES: dict[str, dict[str, str]] = {
         "field": "#2b2b2b",
         "button": "#3a3a3a",
         "button_active": "#4a4a4a",
+        "button_disabled": "#6a6a6a",
         "accent": "#64b5f6",
         "trough": "#121212",
         "select": "#37474f",
         "wait": "#ef5350",
+        "ok": "#81c784",
+        "bad": "#ef5350",
     },
 }
 MIN_PYTHON = (3, 9)
@@ -284,10 +293,7 @@ class App(tk.Tk):
         self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.ui_theme = tk.StringVar(value=load_theme_pref())
         self.ui_engine = tk.StringVar(value=load_engine_pref())
-        self.status_python = tk.StringVar()
-        self.status_libs = tk.StringVar()
-        self.status_models = tk.StringVar()
-        self.status_tesseract = tk.StringVar()
+        self.status_line = tk.StringVar()
         self.progress_value = tk.DoubleVar(value=0)
         self.progress_text = tk.StringVar(value="")
         self._busy = False
@@ -366,15 +372,18 @@ class App(tk.Tk):
         self.lang_combo.pack(side=tk.LEFT, padx=(6, 0))
         self.lang_combo.bind("<<ComboboxSelected>>", self.on_language_change)
 
-        self.status_frame = ttk.LabelFrame(self.root_frame, padding=8)
-        self.status_frame.pack(fill=tk.X, pady=(10, 8))
-        ttk.Label(self.status_frame, textvariable=self.status_python).pack(anchor=tk.W)
-        ttk.Label(self.status_frame, textvariable=self.status_libs).pack(anchor=tk.W)
-        ttk.Label(self.status_frame, textvariable=self.status_models).pack(anchor=tk.W)
-        ttk.Label(self.status_frame, textvariable=self.status_tesseract).pack(anchor=tk.W)
+        # Bottom status bar is packed first (side=BOTTOM) so it stays one line.
+        self.status_bar = ttk.Label(
+            self.root_frame,
+            textvariable=self.status_line,
+            style="StatusBad.TLabel",
+            anchor=tk.W,
+            padding=(2, 4),
+        )
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
 
         actions = ttk.Frame(self.root_frame)
-        actions.pack(fill=tk.X, pady=4)
+        actions.pack(fill=tk.X, pady=(10, 4))
         self.btn_install = ttk.Button(actions, command=self.on_install)
         self.btn_install.pack(side=tk.LEFT)
         self.btn_models = ttk.Button(actions, command=self.on_download_models)
@@ -463,7 +472,6 @@ class App(tk.Tk):
         self.theme_label.configure(text=t("gui.theme"))
         self.engine_label.configure(text=t("gui.engine"))
         self.lang_label.configure(text=t("gui.ui_lang"))
-        self.status_frame.configure(text=t("gui.status"))
         self.btn_install.configure(text=t("gui.install"))
         self.btn_models.configure(text=t("gui.models"))
         self.btn_tesseract.configure(text=t("gui.tesseract_install"))
@@ -520,8 +528,21 @@ class App(tk.Tk):
         )
         style.map(
             "TButton",
-            background=[("active", palette["button_active"]), ("disabled", palette["bg"])],
-            foreground=[("disabled", palette["fg"])],
+            background=[
+                ("active", palette["button_active"]),
+                ("disabled", palette["button_disabled"]),
+            ],
+            foreground=[("disabled", palette["button_disabled"])],
+        )
+        style.configure(
+            "StatusOk.TLabel",
+            background=palette["bg"],
+            foreground=palette["ok"],
+        )
+        style.configure(
+            "StatusBad.TLabel",
+            background=palette["bg"],
+            foreground=palette["bad"],
         )
         style.configure(
             "TCheckbutton",
@@ -661,10 +682,8 @@ class App(tk.Tk):
         self.after(50, self._poll_engine_ui_queue)
 
     def _paint_status_placeholder(self) -> None:
-        self.status_python.set("…")
-        self.status_libs.set("…")
-        self.status_models.set("…")
-        self.status_tesseract.set("…")
+        self.status_line.set("…")
+        self.status_bar.configure(style="StatusBad.TLabel")
         self.btn_file.configure(state=tk.DISABLED)
         self.btn_folder.configure(state=tk.DISABLED)
         self.progress_text.set(t("gui.progress"))
@@ -675,42 +694,36 @@ class App(tk.Tk):
         self._maybe_start_engine()
 
     def refresh_status(self) -> None:
-        if self.base_python is None:
-            self.status_python.set(t("gui.python_missing"))
-        else:
-            version = python_version_string(self.base_python)
-            source = (
-                t("gui.source_system")
-                if is_system_python(self.base_python)
-                else t("gui.source_runtime")
-            )
-            self.status_python.set(t("gui.python_ok", version=version, source=source))
-
+        python_ok = self.base_python is not None
         libs_ok = libs_installed()
-        if libs_ok:
-            self.status_libs.set(t("gui.libs_ready"))
-        elif VENV_DIR.exists():
-            self.status_libs.set(t("gui.libs_partial"))
-        else:
-            self.status_libs.set(t("gui.libs_missing"))
-
-        if models_ready():
-            self.status_models.set(t("gui.models_ready"))
-        else:
-            self.status_models.set(t("gui.models_missing"))
-
-        tess_exe = resolve_tesseract_cmd()
-        if is_tesseract_ready() and tess_exe is not None:
-            self.status_tesseract.set(t("gui.tesseract_ready", path=tess_exe.name))
-        else:
-            self.status_tesseract.set(t("gui.tesseract_missing"))
-
+        models_ok = models_ready()
+        tess_ok = is_tesseract_ready()
         engine_name = normalize_engine(self.ui_engine.get())
-        backend_ready = (
-            models_ready()
-            if engine_name == ENGINE_EASY
-            else is_tesseract_ready()
-        )
+        backend_ready = models_ok if engine_name == ENGINE_EASY else tess_ok
+
+        missing: list[str] = []
+        if not python_ok:
+            missing.append(t("gui.status_item_python"))
+        if not libs_ok:
+            missing.append(t("gui.status_item_libs"))
+        if engine_name == ENGINE_EASY and not models_ok:
+            missing.append(t("gui.status_item_models"))
+        if engine_name == ENGINE_TESSERACT and not tess_ok:
+            missing.append(t("gui.status_item_tesseract"))
+        if libs_ok and backend_ready and not self._engine_ready and not self._engine_starting:
+            missing.append(t("gui.status_item_engine"))
+
+        if not missing and self._engine_ready:
+            self.status_line.set(t("gui.status_ok_line"))
+            self.status_bar.configure(style="StatusOk.TLabel")
+        elif self._engine_starting and not missing:
+            self.status_line.set(t("gui.status_starting_line"))
+            self.status_bar.configure(style="StatusOk.TLabel")
+        else:
+            detail = ", ".join(missing) if missing else t("gui.status_item_engine")
+            self.status_line.set(t("gui.status_bad_line", items=detail))
+            self.status_bar.configure(style="StatusBad.TLabel")
+
         can_run = (
             libs_ok
             and backend_ready
@@ -721,13 +734,17 @@ class App(tk.Tk):
         state = tk.NORMAL if can_run else tk.DISABLED
         self.btn_file.configure(state=state)
         self.btn_folder.configure(state=state)
-        self.btn_install.configure(state=tk.DISABLED if self._busy else tk.NORMAL)
+        # Already installed → gray / not clickable (same as busy).
+        self.btn_install.configure(
+            state=tk.DISABLED if self._busy or libs_ok else tk.NORMAL
+        )
         self.btn_models.configure(
-            state=tk.DISABLED if self._busy or not libs_ok else tk.NORMAL
+            state=tk.DISABLED if self._busy or not libs_ok or models_ok else tk.NORMAL
         )
         self.btn_tesseract.configure(
-            state=tk.DISABLED if self._busy or is_tesseract_ready() else tk.NORMAL
+            state=tk.DISABLED if self._busy or tess_ok else tk.NORMAL
         )
+        self.btn_refresh.configure(state=tk.DISABLED if self._busy else tk.NORMAL)
 
     def _maybe_start_engine(self, *, force: bool = False) -> None:
         if not force and (self._engine_ready or self._engine_starting):

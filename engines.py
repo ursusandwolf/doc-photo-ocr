@@ -145,40 +145,93 @@ def ensure_tesseract_available() -> None:
         raise OcrError(t("err.no_tesseract")) from error
 
 
-def parse_tesseract_data(data: dict[str, Any]) -> list[Any]:
-    """Convert pytesseract.image_to_data(Output.DICT) into TextLine values."""
+def _tesseract_word_at(data: dict[str, Any], index: int) -> Any | None:
+    """One non-empty word TextLine from image_to_data, or None."""
     from ocr import TextLine
 
     texts = data.get("text") or []
+    raw = texts[index] if index < len(texts) else None
+    cleaned = str(raw).strip() if raw is not None else ""
+    if not cleaned:
+        return None
+    try:
+        conf_raw = float(data["conf"][index])
+    except (KeyError, TypeError, ValueError):
+        conf_raw = -1.0
+    confidence = 0.0 if conf_raw < 0 else min(conf_raw / 100.0, 1.0)
+    try:
+        left = int(data["left"][index])
+        top = int(data["top"][index])
+        width = int(data["width"][index])
+        height = int(data["height"][index])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    box = (
+        (left, top),
+        (left + width, top),
+        (left + width, top + height),
+        (left, top + height),
+    )
+    return TextLine(text=cleaned, confidence=confidence, box=box)
+
+
+def parse_tesseract_data(data: dict[str, Any]) -> list[Any]:
+    """Convert pytesseract.image_to_data(Output.DICT) into TextLine values."""
+    texts = data.get("text") or []
     lines: list[Any] = []
-    count = len(texts)
-    for index in range(count):
-        raw = texts[index]
-        cleaned = str(raw).strip() if raw is not None else ""
-        if not cleaned:
-            continue
-        try:
-            conf_raw = float(data["conf"][index])
-        except (KeyError, TypeError, ValueError):
-            conf_raw = -1.0
-        confidence = 0.0 if conf_raw < 0 else min(conf_raw / 100.0, 1.0)
-        try:
-            left = int(data["left"][index])
-            top = int(data["top"][index])
-            width = int(data["width"][index])
-            height = int(data["height"][index])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if width <= 0 or height <= 0:
-            continue
-        box = (
-            (left, top),
-            (left + width, top),
-            (left + width, top + height),
-            (left, top + height),
-        )
-        lines.append(TextLine(text=cleaned, confidence=confidence, box=box))
+    for index in range(len(texts)):
+        word = _tesseract_word_at(data, index)
+        if word is not None:
+            lines.append(word)
     return lines
+
+
+def group_tesseract_native_rows(data: dict[str, Any]) -> list[list[Any]]:
+    """Seed rows from Tesseract block/par/line ids, then refine with overlap clustering.
+
+    Native line_num keeps table cells on the correct visual line. If Tesseract
+    exposes only a single line id, fall back to geometry-only grouping.
+    """
+    from ocr import box_left, group_lines_into_rows
+
+    texts = data.get("text") or []
+    buckets: dict[tuple[int, int, int], list[Any]] = {}
+    order: list[tuple[int, int, int]] = []
+    for index in range(len(texts)):
+        word = _tesseract_word_at(data, index)
+        if word is None:
+            continue
+        try:
+            block = int(data.get("block_num", [1] * len(texts))[index])
+            par = int(data.get("par_num", [1] * len(texts))[index])
+            line = int(data.get("line_num", [1] * len(texts))[index])
+        except (TypeError, ValueError, IndexError):
+            block = par = line = 1
+        key = (block, par, line)
+        if key not in buckets:
+            order.append(key)
+            buckets[key] = []
+        buckets[key].append(word)
+
+    if not order:
+        return []
+    native = [buckets[key] for key in order]
+    if len(native) == 1:
+        # No useful line structure — geometry clustering only.
+        return group_lines_into_rows(native[0])
+
+    # Refine: merge adjacent native lines that geometry says are one row.
+    merged: list[list[Any]] = [list(native[0])]
+    for row in native[1:]:
+        trial = merged[-1] + list(row)
+        regrouped = group_lines_into_rows(trial)
+        if len(regrouped) == 1:
+            merged[-1].extend(row)
+        else:
+            merged.append(list(row))
+    return [sorted(row, key=box_left) for row in merged]
 
 
 class EasyOcrEngine:
@@ -243,7 +296,7 @@ class TesseractEngine:
     ) -> list[Any]:
         from errors import OcrError
         from i18n import t
-        from ocr import box_left, group_lines_into_rows
+        from ocr import box_left
 
         ensure_tesseract_available()
         import pytesseract
@@ -256,13 +309,12 @@ class TesseractEngine:
                 lang=self._lang,
                 output_type=pytesseract.Output.DICT,
             )
-            words = parse_tesseract_data(data)
-            if not words:
+            rows = group_tesseract_native_rows(data)
+            if not rows:
                 if on_rows is not None:
                     on_rows(0)
                 return []
 
-            rows = group_lines_into_rows(words)
             if on_rows is not None:
                 on_rows(len(rows))
             ordered: list[Any] = []

@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import sys
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple, Optional, Sequence
+
+_LOG = logging.getLogger(__name__)
 
 import cv2
 import numpy as np
@@ -585,7 +588,16 @@ def read_lines(
                     reformat=False,
                 )
                 row_lines = parse_easyocr_results(raw_rows)
+                before = [box_left(part) for part in row_lines]
                 row_lines = sorted(row_lines, key=box_left)
+                after = [box_left(part) for part in row_lines]
+                if before != after:
+                    _LOG.debug(
+                        "L→R order corrected for %s row (%s -> %s)",
+                        path.name,
+                        before,
+                        after,
+                    )
                 lines.extend(row_lines)
                 row_text = " ".join(part.text for part in row_lines if part.text).strip()
                 if on_row is not None:
@@ -738,6 +750,25 @@ def estimate_page_skew_degrees(lines: Sequence[TextLine]) -> float:
     chosen = tilted if len(tilted) >= max(2, len(samples) // 3) else samples
     chosen.sort(key=lambda item: item[0])
     return float(chosen[len(chosen) // 2][0])
+
+
+def estimate_residual_skew_degrees(flat: Sequence[FlatBox]) -> float:
+    """Second-pass tilt from flattened wide boxes (center_y vs center_x slope)."""
+    wide = [item for item in flat if item.width >= MIN_SKEW_WIDTH_HEIGHT_RATIO * item.height]
+    if len(wide) < MIN_SKEW_SAMPLES:
+        return 0.0
+    xs = [(item.left + item.right) / 2.0 for item in wide]
+    ys = [item.center_y for item in wide]
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    denom = sum((x - mean_x) ** 2 for x in xs)
+    if denom < 1.0:
+        return 0.0
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
+    degrees = math.degrees(math.atan(slope))
+    if abs(degrees) < 1.0 or abs(degrees) > 15.0:
+        return 0.0
+    return float(degrees)
 
 
 def rotate_point(
@@ -930,6 +961,15 @@ def group_lines_into_rows(lines: Sequence[TextLine]) -> list[list[TextLine]]:
     )
     origin = (origin_x, origin_y)
     flat = [flatten_box(item, skew_degrees=skew, origin=origin) for item in lines]
+
+    # Residual only when page-angle samples were weak — otherwise multi-row
+    # center slopes invent a false tilt and glue distinct lines together.
+    if abs(skew) < 2.0:
+        residual = estimate_residual_skew_degrees(flat)
+        if abs(residual) >= 1.0:
+            skew += residual
+            flat = [flatten_box(item, skew_degrees=skew, origin=origin) for item in lines]
+            _LOG.debug("Applied residual skew %.2f° (total %.2f°)", residual, skew)
 
     rows: list[list[FlatBox]] = []
     for band in split_column_bands(flat):
