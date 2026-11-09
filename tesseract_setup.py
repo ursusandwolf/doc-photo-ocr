@@ -1,18 +1,23 @@
-"""Detect and install a local Windows Tesseract (no admin / no PATH edit).
+"""Detect and install a local Windows Tesseract (user folder + one UAC prompt).
 
 Layout after install:
   %LOCALAPPDATA%/DocOCR/tesseract/tesseract.exe
   %LOCALAPPDATA%/DocOCR/tesseract/tessdata/{eng,rus}.traineddata
 
 Path is persisted to tesseract_cmd.txt next to the app for resolve_tesseract_cmd().
+
+The UB-Mannheim setup is an NSIS installer that cannot be unpacked by 7-Zip as an
+archive and requires elevation even for a custom directory — so we run it silently
+with ShellExecute \"runas\" into LocalAppData.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
-import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -24,23 +29,30 @@ from i18n import t
 
 LogFn = Callable[[str], None]
 
-# Pinned artifacts (Windows x64). Installer is an NSIS package extractable by 7zr.
-_TESSERACT_VERSION = "5.5.0.20241111"
+# Pinned UB-Mannheim Windows x64 NSIS installer (official GitHub release asset).
+_TESSERACT_VERSION = "5.5.3.20260724"
+_TESSERACT_TAG = "5.5.3"
 _TESSERACT_SETUP_NAME = f"tesseract-ocr-w64-setup-{_TESSERACT_VERSION}.exe"
 _TESSERACT_SETUP_URLS = (
-    f"https://digi.bib.uni-mannheim.de/tesseract/{_TESSERACT_SETUP_NAME}",
-    f"https://github.com/tesseract-ocr/tesseract/releases/download/5.5.0/{_TESSERACT_SETUP_NAME}",
+    f"https://github.com/tesseract-ocr/tesseract/releases/download/"
+    f"{_TESSERACT_TAG}/{_TESSERACT_SETUP_NAME}",
 )
-_SEVEN_ZIP_URL = "https://www.7-zip.org/a/7zr.exe"
+# SHA-256 of the exact pinned bytes (recompute when bumping the version).
+_TESSERACT_SETUP_SHA256 = (
+    "bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4"
+)
 _TESSDATA_FILES = {
     "eng.traineddata": (
-        "https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata"
+        "https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata",
+        "daa0c97d651c19fba3b25e81317cd697e9908c8208090c94c3905381c23fc047",
     ),
     "rus.traineddata": (
-        "https://github.com/tesseract-ocr/tessdata/raw/main/rus.traineddata"
+        "https://github.com/tesseract-ocr/tessdata/raw/main/rus.traineddata",
+        "681be2c2bead1bc7bd235df88c44e8e60ae73ae866840c0ad4e3b4c247bd37c2",
     ),
 }
 _REQUIRED_LANGS = ("eng", "rus")
+_INSTALL_WAIT_SECONDS = 600
 
 
 def install_dir() -> Path:
@@ -70,7 +82,7 @@ def write_tesseract_cmd(exe: Path) -> None:
 
 
 def install_tesseract_local(log: Optional[LogFn] = None) -> Path:
-    """Download, extract, ensure tessdata, persist tesseract_cmd.txt. Returns exe path."""
+    """Download installer, silent-install to LocalAppData, ensure tessdata, persist path."""
     emit = log or (lambda _message: None)
     if os.name != "nt":
         raise OcrError(t("err.tesseract_windows_only"))
@@ -81,64 +93,35 @@ def install_tesseract_local(log: Optional[LogFn] = None) -> Path:
         write_tesseract_cmd(existing)
         return existing
     if existing is not None:
-        emit(t("gui.tesseract_download_langs"))
-        tessdata = tessdata_dir_for(existing)
-        tessdata.mkdir(parents=True, exist_ok=True)
-        for name, url in _TESSDATA_FILES.items():
-            dest = tessdata / name
-            if dest.is_file() and dest.stat().st_size > 0:
-                continue
-            _download(url, dest, emit)
+        _ensure_langs(existing, emit)
         if has_required_langs(existing):
             write_tesseract_cmd(existing)
             emit(t("gui.tesseract_ready_log", path=existing))
             return existing
 
     target = install_dir()
-    target.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="dococr-tess-") as tmp:
         tmp_dir = Path(tmp)
         setup_path = tmp_dir / _TESSERACT_SETUP_NAME
-        seven_path = tmp_dir / "7zr.exe"
-
         emit(t("gui.tesseract_download_setup"))
         _download_first_ok(_TESSERACT_SETUP_URLS, setup_path, emit)
 
-        emit(t("gui.tesseract_download_7zip"))
-        _download(_SEVEN_ZIP_URL, seven_path, emit)
-
-        extract_root = tmp_dir / "extracted"
-        extract_root.mkdir(parents=True, exist_ok=True)
-        emit(t("gui.tesseract_extracting"))
-        _extract_nsis(seven_path, setup_path, extract_root)
-
-        found = _find_tesseract_exe(extract_root)
-        if found is None:
-            raise OcrError(t("err.tesseract_extract_failed"))
-
-        emit(t("gui.tesseract_installing", path=target))
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
         target.mkdir(parents=True, exist_ok=True)
-        # Copy the folder that contains tesseract.exe (and usually tessdata/).
-        shutil.copytree(found.parent, target, dirs_exist_ok=True)
+
+        emit(t("gui.tesseract_installing", path=target))
+        emit(t("gui.tesseract_uac_hint"))
+        _silent_install_nsis(setup_path, target)
 
     exe = target / "tesseract.exe"
     if not exe.is_file():
         nested = _find_tesseract_exe(target)
         if nested is None:
-            raise OcrError(t("err.tesseract_extract_failed"))
+            raise OcrError(t("err.tesseract_install_failed"))
         exe = nested
 
-    tessdata = tessdata_dir_for(exe)
-    tessdata.mkdir(parents=True, exist_ok=True)
-    emit(t("gui.tesseract_download_langs"))
-    for name, url in _TESSDATA_FILES.items():
-        dest = tessdata / name
-        if dest.is_file() and dest.stat().st_size > 0:
-            continue
-        _download(url, dest, emit)
-
+    _ensure_langs(exe, emit)
     if not has_required_langs(exe):
         raise OcrError(t("err.tesseract_langs_missing"))
 
@@ -147,18 +130,63 @@ def install_tesseract_local(log: Optional[LogFn] = None) -> Path:
     return exe
 
 
+def _ensure_langs(exe: Path, emit: LogFn) -> None:
+    tessdata = tessdata_dir_for(exe)
+    tessdata.mkdir(parents=True, exist_ok=True)
+    emit(t("gui.tesseract_download_langs"))
+    for name, (url, digest) in _TESSDATA_FILES.items():
+        dest = tessdata / name
+        if dest.is_file() and _file_sha256(dest) == digest:
+            continue
+        _download(url, dest, emit, expected_sha256=digest)
+
+
 def _download_first_ok(urls: Sequence[str], dest: Path, emit: LogFn) -> None:
     errors: list[str] = []
     for url in urls:
         try:
-            _download(url, dest, emit)
+            _download(url, dest, emit, expected_sha256=_TESSERACT_SETUP_SHA256)
             return
         except OcrError as error:
             errors.append(str(error))
     raise OcrError(t("err.tesseract_download_failed", error="; ".join(errors)))
 
 
-def _download(url: str, dest: Path, emit: LogFn) -> None:
+def _file_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _verify_sha256(path: Path, expected: str) -> None:
+    actual = _file_sha256(path)
+    if actual.lower() != expected.lower():
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise OcrError(
+            t(
+                "err.tesseract_checksum",
+                name=path.name,
+                expected=expected[:16],
+                actual=actual[:16],
+            )
+        )
+
+
+def _download(
+    url: str,
+    dest: Path,
+    emit: LogFn,
+    *,
+    expected_sha256: str,
+) -> None:
     emit(t("gui.tesseract_fetch", url=url))
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -169,36 +197,81 @@ def _download(url: str, dest: Path, emit: LogFn) -> None:
     if not data:
         raise OcrError(t("err.tesseract_download_failed", error="empty response"))
     dest.write_bytes(data)
+    _verify_sha256(dest, expected_sha256)
+    emit(t("gui.tesseract_checksum_ok", name=dest.name))
 
 
-def _extract_nsis(seven_zip: Path, archive: Path, out_dir: Path) -> None:
-    command = [
-        str(seven_zip),
-        "x",
-        "-y",
-        f"-o{out_dir}",
-        str(archive),
-    ]
+def _silent_install_nsis(setup: Path, target: Path) -> None:
+    """Run UB-Mannheim NSIS setup elevated: /S /D=<target> ( /D must be last )."""
+    # No quotes around /D= path — NSIS requirement.
+    params = f"/S /D={target}"
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=600,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise OcrError(t("err.tesseract_extract_failed")) from error
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        raise OcrError(
-            t(
-                "err.tesseract_extract_failed_detail",
-                detail=detail or f"exit {completed.returncode}",
-            )
-        )
+        _run_elevated(setup, params)
+    except OcrError:
+        raise
+    except OSError as error:
+        raise OcrError(t("err.tesseract_install_failed")) from error
+
+    deadline = time.monotonic() + _INSTALL_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if _find_tesseract_exe(target) is not None:
+            return
+        time.sleep(0.5)
+    raise OcrError(t("err.tesseract_install_failed"))
+
+
+def _run_elevated(executable: Path, parameters: str) -> None:
+    """ShellExecuteExW runas + wait. User must accept the UAC prompt."""
+    import ctypes
+    from ctypes import wintypes
+
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SW_HIDE = 0
+    INFINITE = 0xFFFFFFFF
+    WAIT_FAILED = 0xFFFFFFFF
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", wintypes.ULONG),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hKeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIcon", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    info = SHELLEXECUTEINFOW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS
+    info.lpVerb = "runas"
+    info.lpFile = str(executable)
+    info.lpParameters = parameters
+    info.nShow = SW_HIDE
+
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)):
+        raise OcrError(t("err.tesseract_uac_denied"))
+    if not info.hProcess:
+        raise OcrError(t("err.tesseract_uac_denied"))
+
+    waited = ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, INFINITE)
+    if waited == WAIT_FAILED:
+        ctypes.windll.kernel32.CloseHandle(info.hProcess)
+        raise OcrError(t("err.tesseract_install_failed"))
+
+    code = wintypes.DWORD()
+    ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
+    ctypes.windll.kernel32.CloseHandle(info.hProcess)
+    if code.value not in (0, 3010):  # 3010 = success, reboot required
+        raise OcrError(t("err.tesseract_install_exit", code=code.value))
 
 
 def _find_tesseract_exe(root: Path) -> Optional[Path]:

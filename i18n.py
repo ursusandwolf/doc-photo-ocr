@@ -55,8 +55,21 @@ _MESSAGES: dict[str, dict[str, str]] = {
         ),
         "err.tesseract_windows_only": "Автоустановка Tesseract поддерживается только на Windows.",
         "err.tesseract_download_failed": "Не удалось скачать Tesseract: {error}",
+        "err.tesseract_checksum": (
+            "Повреждён или подменён файл {name}: SHA-256 не совпал "
+            "(ожидали {expected}…, получили {actual}…)."
+        ),
         "err.tesseract_extract_failed": "Не удалось распаковать установщик Tesseract.",
         "err.tesseract_extract_failed_detail": "Не удалось распаковать Tesseract: {detail}",
+        "err.tesseract_install_failed": (
+            "Установка Tesseract не завершилась. "
+            "Подтвердите UAC и повторите, либо поставьте UB-Mannheim вручную."
+        ),
+        "err.tesseract_uac_denied": (
+            "Установка Tesseract отменена (нужно разрешить UAC) "
+            "или ShellExecute недоступен."
+        ),
+        "err.tesseract_install_exit": "Установщик Tesseract завершился с кодом {code}.",
         "err.tesseract_langs_missing": "После установки не найдены языки eng/rus (tessdata).",
         "err.download_with_images": (
             "Загрузка моделей запускается отдельно, без путей к фото:\n"
@@ -125,15 +138,20 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.tesseract_prompt_body": (
             "Движок Tesseract не найден.\n"
             "Скачать и установить локальную копию (rus+eng) сейчас?\n"
-            "Нужен интернет; установка в %LOCALAPPDATA%\\DocOCR\\tesseract."
+            "Нужен интернет и подтверждение UAC; каталог:\n"
+            "%LOCALAPPDATA%\\DocOCR\\tesseract."
         ),
         "gui.tesseract_already": "Tesseract уже доступен: {path}",
         "gui.tesseract_download_setup": "Скачиваю установщик Tesseract…",
         "gui.tesseract_download_7zip": "Скачиваю 7zr для распаковки…",
         "gui.tesseract_extracting": "Распаковываю Tesseract…",
-        "gui.tesseract_installing": "Копирую файлы в {path}…",
+        "gui.tesseract_installing": "Устанавливаю Tesseract в {path}…",
+        "gui.tesseract_uac_hint": (
+            "Подтвердите запрос UAC Windows — установщик Tesseract требует повышение прав."
+        ),
         "gui.tesseract_download_langs": "Скачиваю языки eng/rus (tessdata)…",
         "gui.tesseract_fetch": "Загрузка: {url}",
+        "gui.tesseract_checksum_ok": "SHA-256 OK: {name}",
         "gui.tesseract_ready_log": "Tesseract готов: {path}",
         "gui.tesseract_done_body": (
             "Tesseract установлен локально.\n"
@@ -255,8 +273,21 @@ _MESSAGES: dict[str, dict[str, str]] = {
         ),
         "err.tesseract_windows_only": "Automatic Tesseract install is supported on Windows only.",
         "err.tesseract_download_failed": "Could not download Tesseract: {error}",
+        "err.tesseract_checksum": (
+            "Corrupt or tampered file {name}: SHA-256 mismatch "
+            "(expected {expected}…, got {actual}…)."
+        ),
         "err.tesseract_extract_failed": "Could not extract the Tesseract installer.",
         "err.tesseract_extract_failed_detail": "Could not extract Tesseract: {detail}",
+        "err.tesseract_install_failed": (
+            "Tesseract install did not finish. "
+            "Approve UAC and retry, or install UB-Mannheim manually."
+        ),
+        "err.tesseract_uac_denied": (
+            "Tesseract install cancelled (UAC must be allowed) "
+            "or ShellExecute is unavailable."
+        ),
+        "err.tesseract_install_exit": "Tesseract installer exited with code {code}.",
         "err.tesseract_langs_missing": "eng/rus tessdata missing after install.",
         "err.download_with_images": (
             "Model download runs alone, without image paths:\n"
@@ -325,15 +356,20 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "gui.tesseract_prompt_body": (
             "Tesseract engine was not found.\n"
             "Download and install a local copy (rus+eng) now?\n"
-            "Internet required; installs to %LOCALAPPDATA%\\DocOCR\\tesseract."
+            "Internet and a UAC approval are required; folder:\n"
+            "%LOCALAPPDATA%\\DocOCR\\tesseract."
         ),
         "gui.tesseract_already": "Tesseract already available: {path}",
         "gui.tesseract_download_setup": "Downloading Tesseract installer…",
         "gui.tesseract_download_7zip": "Downloading 7zr for extraction…",
         "gui.tesseract_extracting": "Extracting Tesseract…",
-        "gui.tesseract_installing": "Copying files to {path}…",
+        "gui.tesseract_installing": "Installing Tesseract to {path}…",
+        "gui.tesseract_uac_hint": (
+            "Approve the Windows UAC prompt — the Tesseract installer needs elevation."
+        ),
         "gui.tesseract_download_langs": "Downloading eng/rus tessdata…",
         "gui.tesseract_fetch": "Fetching: {url}",
+        "gui.tesseract_checksum_ok": "SHA-256 OK: {name}",
         "gui.tesseract_ready_log": "Tesseract ready: {path}",
         "gui.tesseract_done_body": (
             "Tesseract installed locally.\n"

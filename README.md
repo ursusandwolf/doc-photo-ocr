@@ -26,7 +26,7 @@ UI language defaults to **Russian**. Switch to English in the GUI combo box, or 
 2. Run `start.bat` (or `DocOCR.vbs` / `DocOCR.bat`).
 3. If libraries are missing — **Install libraries** (internet once).
 4. If models are missing — **Download models** (internet once).
-5. Optional: **Install Tesseract** for the alternate engine (internet once; installs under `%LOCALAPPDATA%\DocOCR\tesseract`, no admin).
+5. Optional: **Install Tesseract** for the alternate engine (internet once + one UAC prompt; installs under `%LOCALAPPDATA%\DocOCR\tesseract`).
 6. Drop a photo or folder (or use the buttons) — get `result.txt`.
 
 If the machine already has Python 3.9+ with tkinter, the app uses it and does **not** reinstall Python.  
@@ -54,7 +54,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 ### Engines and polish
 
 - **EasyOCR** (default): CRAFT detect + CRNN recognize; weights in `models/`.
-- **Tesseract** (optional): Strategy backend in [`engines.py`](engines.py); local install via [`tesseract_setup.py`](tesseract_setup.py) or system `tesseract.exe`.
+- **Tesseract** (optional): Strategy backend in [`engines.py`](engines.py); GUI installs UB-Mannheim via silent NSIS + UAC ([`tesseract_setup.py`](tesseract_setup.py)), or uses a system `tesseract.exe`.
 - Shared post-process in [`spellcheck.py`](spellcheck.py) (offline dictionaries + `dicts/`).
 - Light preprocessing in [`preprocess.py`](preprocess.py) (no hard binarization).
 
@@ -225,7 +225,7 @@ Modern office samples with fictional data live in [`resources/`](resources/): ap
 | Spellcheck / preprocess | No | Local only |
 | **Install libraries** | Yes (user click) | `pip` + `download.pytorch.org` (subprocess; not via OCR guard) |
 | **Download models** / `--download-models` | Yes (user click) | EasyOCR CDN (GitHub JaidedAI releases) |
-| **Install Tesseract** | Yes (user click) | UB-Mannheim installer + `7zr` + eng/rus tessdata |
+| **Install Tesseract** | Yes (user click + UAC) | Official GitHub asset + pinned SHA-256; silent NSIS into LocalAppData + eng/rus tessdata |
 
 How the OCR guard works:
 

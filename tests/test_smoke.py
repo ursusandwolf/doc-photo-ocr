@@ -156,6 +156,21 @@ class OfflineGuardTests(unittest.TestCase):
         finally:
             urllib.request.urlopen = original  # type: ignore[assignment]
 
+    def test_tesseract_checksum_rejects_mismatch(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from errors import OcrError
+        from tesseract_setup import _verify_sha256
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fake.exe"
+            path.write_bytes(b"not-the-real-installer")
+            with self.assertRaises(OcrError) as ctx:
+                _verify_sha256(path, "0" * 64)
+            self.assertIn("SHA-256", str(ctx.exception))
+            self.assertFalse(path.exists())
+
     def test_tesseract_setup_import_is_offline(self) -> None:
         import urllib.request
 
