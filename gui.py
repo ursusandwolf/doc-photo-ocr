@@ -760,9 +760,15 @@ class App(tk.Tk):
         state = tk.NORMAL if can_run else tk.DISABLED
         self.btn_file.configure(state=state)
         self.btn_folder.configure(state=state)
-        # Already installed → gray / not clickable (same as busy).
+        # Gray only when imports actually work (or busy). Broken .venv stays clickable.
         self.btn_install.configure(
-            state=tk.DISABLED if self._busy or libs_ok else tk.NORMAL
+            state=tk.DISABLED
+            if install_button_disabled(
+                busy=self._busy,
+                libs_present=libs_ok,
+                libs_import_ok=libs_ready() if libs_ok else False,
+            )
+            else tk.NORMAL
         )
         self.btn_models.configure(
             state=tk.DISABLED if self._busy or not libs_ok or models_ok else tk.NORMAL
@@ -1505,6 +1511,16 @@ def is_system_python(executable: Path) -> bool:
         )
     except OSError:
         return True
+
+
+def install_button_disabled(
+    *,
+    busy: bool,
+    libs_present: bool,
+    libs_import_ok: bool,
+) -> bool:
+    """Disable Install when busy or when libraries truly import."""
+    return busy or (libs_present and libs_import_ok)
 
 
 def libs_installed() -> bool:

@@ -25,6 +25,27 @@ MODELS_DIR = ROOT / "models"
 SAMPLE_IMAGE = ROOT / "samples" / "sample_contract.png"
 
 
+class GuiHelperSmokeTests(unittest.TestCase):
+    def test_install_button_stays_enabled_when_venv_broken(self) -> None:
+        from gui import install_button_disabled
+
+        self.assertFalse(
+            install_button_disabled(
+                busy=False, libs_present=True, libs_import_ok=False
+            )
+        )
+        self.assertTrue(
+            install_button_disabled(
+                busy=False, libs_present=True, libs_import_ok=True
+            )
+        )
+        self.assertTrue(
+            install_button_disabled(
+                busy=True, libs_present=False, libs_import_ok=False
+            )
+        )
+
+
 class CliSmokeTests(unittest.TestCase):
     def test_missing_file_returns_error(self) -> None:
         code = ocr.main([str(ROOT / "нет-такого-файла.jpg")])
