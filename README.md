@@ -57,7 +57,7 @@ The `runtime` folder in the release is a fallback Python when no system Python e
 - **EasyOCR** (default): CRAFT detect + CRNN recognize; weights in `models/`.
 - **Tesseract** (optional): Strategy backend in [`engines.py`](engines.py); GUI installs UB-Mannheim via silent NSIS + UAC ([`tesseract_setup.py`](tesseract_setup.py)), or uses a system `tesseract.exe`.
 - Shared post-process in [`spellcheck.py`](spellcheck.py) (offline dictionaries + `dicts/`).
-- Light preprocessing in [`preprocess.py`](preprocess.py) (no hard binarization).
+- Preprocess profiles in [`preprocess.py`](preprocess.py): **light** for EasyOCR (geometry + gray + deskew), **full** (also median + CLAHE) for Tesseract; no hard binarization.
 
 ### Security / offline
 
@@ -76,14 +76,16 @@ flowchart LR
   prep --> detect[CRAFT detect]
   detect --> rows[Cluster boxes into rows]
   rows --> recog[CRNN recognize per row]
-  recog --> polish[spell / caps / junk / quotes]
+  recog --> reocr[low-conf re-OCR]
+  reocr --> polish[spell / caps / junk / quotes]
 ```
 
-1. [`preprocess.py`](preprocess.py) — alignment/contrast (disable with `--no-preprocess`).
+1. [`preprocess.py`](preprocess.py) — EasyOCR uses light prep; Tesseract uses full (disable with `--no-preprocess`).
 2. **Detect** (CRAFT) — text boxes on the page.
 3. Boxes are clustered into rows ([`group_lines_into_rows`](ocr.py)): `--layout plain` (default) keeps near-X neighbors only; `table` allows wide cell gaps. Page skew + residual tilt, column gutters; Tesseract seeds from native `line_num` then refines the same way.
 4. **Recognize** (CRNN) — text per row (L→R sort; debug log if order changed).
-5. Post-process in [`spellcheck.py`](spellcheck.py).
+5. Low-conf re-OCR (EasyOCR only): padded crop and digits allowlist when `confidence < 0.65`; keep the higher score.
+6. Post-process in [`spellcheck.py`](spellcheck.py).
 
 Detect and recognize use **different weights**, but always run **together** in one `easyocr.Reader`. There is no GUI switch for “detect only” or an alternate model.
 
@@ -92,12 +94,13 @@ Detect and recognize use **different weights**, but always run **together** in o
 | OCR languages | `--lang` (CLI), default `ru` | Passed to `Reader(['ru'])` or `Reader(['ru','en'])` |
 | UI language | `--ui` / GUI combo | Labels only, not models |
 
-With `--lang ru+en`, EasyOCR keeps one shared reader with several recognition dictionaries and reads mixed text in a **single** pass (not two separate runs). Weights live in [`models/`](models/) (`.pth`); download with `python ocr.py --download-models`.
+With `--lang ru+en`, EasyOCR keeps one shared reader with several recognition dictionaries and reads mixed text in a **single** pass (not two separate runs). Prefer **`ru+en`** when the page has Latin tokens (email, `Invoice`, IDs); plain Cyrillic can stay `ru`. Weights live in [`models/`](models/) (`.pth`); download with `python ocr.py --download-models`.
 
 What you can change today:
 
 - CLI: `--lang ru` / `ru+en`, `--engine easyocr|tesseract`.
-- GUI: engine combo + post-process toggles (spell, caps, junk, invert).
+- GUI: engine/layout combos; polish toggles under **More options** (spell, caps, OCR substitutions *, re-OCR *, junk *, invert *).
+- `*` = experimental / may worsen text. CLI: `--no-normalize`, `--no-reocr`, `--no-spell`, `--no-fix-caps`, `--strip-junk`, `--invert`.
 - Post-process options are not OCR models.
 
 ## Engines (EasyOCR + Tesseract)
@@ -216,7 +219,7 @@ Modern office samples with fictional data live in [`resources/`](resources/): ap
 - Blur, glare, and deep shadows hurt accuracy. Shoot the full page under even light.
 - Short side preferably ≥ 1000 px.
 - Severely cropped pages will not be reconstructed; only mild perspective/skew is fixed.
-- If preprocess hurts quality, retry with `--no-preprocess`.
+- If preprocess hurts quality, retry with `--no-preprocess`. EasyOCR already uses the light profile by default.
 - Printed text is the target; handwriting is not.
 
 ## Offline / network security

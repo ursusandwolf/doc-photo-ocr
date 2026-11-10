@@ -280,6 +280,21 @@ class PreprocessSmokeTests(unittest.TestCase):
         self.assertEqual(prepared.shape, (900, 700))
         self.assertIsNone(ocr.find_document_corners(page))
 
+    def test_easyocr_uses_light_preprocess_profile(self) -> None:
+        from preprocess import preprocess_for_engine, preprocess_light
+
+        page = np.full((200, 160, 3), 220, np.uint8)
+        cv2.putText(page, "A", (40, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 0), 2)
+        light = preprocess_light(page)
+        via_engine = preprocess_for_engine(page, "easyocr")
+        full = ocr.preprocess(page)
+        self.assertEqual(light.shape, via_engine.shape)
+        self.assertTrue(np.array_equal(light, via_engine))
+        self.assertEqual(full.ndim, 2)
+        self.assertEqual(light.ndim, 2)
+        # Full CLAHE path differs from light on a non-flat page.
+        self.assertFalse(np.array_equal(light, full))
+
     def test_local_models_check_matches_disk(self) -> None:
         self.assertEqual(ocr.local_models_present(), any(MODELS_DIR.glob("*.pth")))
 
@@ -541,6 +556,52 @@ class TextLayoutSmokeTests(unittest.TestCase):
         lines = ocr.parse_easyocr_results(raw)
         self.assertEqual([item.text for item in lines], ["Hello"])
 
+    def test_pad_box_expands_and_clips(self) -> None:
+        box = ((10, 10), (30, 10), (30, 20), (10, 20))
+        padded = ocr.pad_box(box, (100, 100), ratio=0.5)
+        self.assertEqual(padded[0], (0, 5))
+        self.assertEqual(padded[2], (40, 25))
+
+    def test_looks_numeric_token(self) -> None:
+        self.assertTrue(ocr.looks_numeric_token("15.07.2025"))
+        self.assertTrue(ocr.looks_numeric_token("18 450,00"))
+        self.assertFalse(ocr.looks_numeric_token("ЗАЯВЛЕНИЕ"))
+        self.assertFalse(ocr.looks_numeric_token(""))
+
+    def test_rerecognize_low_confidence_keeps_better(self) -> None:
+        class FakeReader:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def recognize(self, _img: object, **kwargs: object) -> list[tuple]:
+                self.calls.append(kwargs)
+                allowlist = str(kwargs.get("allowlist") or "")
+                box = ((8, 8), (42, 8), (42, 22), (8, 22))
+                if allowlist:
+                    return [(box, "15.07.2025", 0.91)]
+                return [(box, "15.07 2025", 0.72)]
+
+        weak = ocr.TextLine(
+            "l5.07 202",
+            0.40,
+            ((10, 10), (30, 10), (30, 20), (10, 20)),
+        )
+        strong = ocr.TextLine(
+            "ok",
+            0.90,
+            ((50, 10), (70, 10), (70, 20), (50, 20)),
+        )
+        grey = np.zeros((40, 80), np.uint8)
+        reader = FakeReader()
+        out = ocr.rerecognize_low_confidence(reader, grey, (weak, strong))
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0].text, "15.07.2025")
+        self.assertGreaterEqual(out[0].confidence, 0.91)
+        self.assertEqual(out[0].box, weak.box)
+        self.assertEqual(out[1], strong)
+        self.assertGreaterEqual(len(reader.calls), 2)
+        self.assertTrue(any(call.get("allowlist") for call in reader.calls))
+
 
 class SpellcheckSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -645,6 +706,17 @@ class SpellcheckSmokeTests(unittest.TestCase):
             strip_junk=False,
         )
         self.assertEqual(fixed, "Договор № 1 от 01.02.2024 с ООО Тест")
+        raw = "Договор Ng 1 от 01-02-2024 с ooo Тест"
+        self.assertEqual(
+            spellcheck.correct_text(
+                raw,
+                spell=False,
+                fix_caps=False,
+                strip_junk=False,
+                normalize=False,
+            ),
+            raw,
+        )
         # Spell must not turn office «руб.» into «руби.».
         self.assertEqual(
             spellcheck.correct_text(

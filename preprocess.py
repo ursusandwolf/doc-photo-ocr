@@ -1,7 +1,8 @@
 """Image preparation before OCR.
 
-Fixed order: perspective -> grayscale -> denoise -> contrast -> deskew.
-No hard binarization: EasyOCR reads gray photo pages better than black/white.
+Full profile (Tesseract / opt-in): perspective -> gray -> denoise -> CLAHE -> deskew.
+Light profile (EasyOCR default): perspective -> gray -> deskew (no median/CLAHE).
+No hard binarization: gray photo pages work better than black/white for both engines.
 """
 
 from __future__ import annotations
@@ -14,6 +15,9 @@ import numpy as np
 MEDIAN_BLUR_SIZE = 3
 CLAHE_CLIP_LIMIT = 2.0
 CLAHE_TILE_SIZE = (8, 8)
+PREPROCESS_FULL = "full"
+PREPROCESS_LIGHT = "light"
+PREPROCESS_PROFILES = (PREPROCESS_FULL, PREPROCESS_LIGHT)
 
 DETECT_MAX_SIDE = 1000
 MIN_DOCUMENT_AREA_RATIO = 0.30
@@ -29,12 +33,29 @@ MIN_TEXT_PIXELS = 100
 
 
 def preprocess(image: np.ndarray) -> np.ndarray:
-    """Prepare a photo for OCR and return a single-channel image."""
+    """Full prep: geometry + denoise + CLAHE + deskew. Prefer for Tesseract."""
     aligned = straighten_document(image)
     gray = to_gray(aligned)
     denoised = cv2.medianBlur(gray, MEDIAN_BLUR_SIZE)
     contrasted = increase_contrast(denoised)
     return deskew(contrasted)
+
+
+def preprocess_light(image: np.ndarray) -> np.ndarray:
+    """Light prep for EasyOCR: geometry + gray + deskew (skips median/CLAHE).
+
+    A/B on resources/*.png showed full CLAHE/denoise over-fragments CRAFT boxes.
+    """
+    aligned = straighten_document(image)
+    gray = to_gray(aligned)
+    return deskew(gray)
+
+
+def preprocess_for_engine(image: np.ndarray, engine_name: str) -> np.ndarray:
+    """Pick prep profile from engine name (`easyocr` → light, else full)."""
+    if (engine_name or "").strip().lower() == "easyocr":
+        return preprocess_light(image)
+    return preprocess(image)
 
 
 def invert_image(image: np.ndarray) -> np.ndarray:

@@ -50,7 +50,7 @@ from layout import (
     normalize_layout,
 )
 from offline_guard import offline_session
-from preprocess import find_document_corners, invert_image, preprocess
+from preprocess import find_document_corners, invert_image, preprocess, preprocess_for_engine
 from spellcheck import correct_text
 
 DEFAULT_LANGUAGES = "ru"
@@ -69,6 +69,10 @@ MAX_HORIZONTAL_GAP_RATIO = 2.5
 # Skew from clearly wide boxes only; thin samples are detector noise.
 MIN_SKEW_WIDTH_HEIGHT_RATIO = 2.5
 MIN_SKEW_SAMPLES = 3
+# EasyOCR: second recognize pass for weak tokens (pad crop / digits allowlist).
+LOW_CONFIDENCE_MARK = 0.65
+REOCR_PAD_RATIO = 0.18
+DIGIT_ALLOWLIST = "0123456789.,/:№- "
 
 # EasyOCR stores detection/recognition weights under models/.
 # Without .pth files we fail early with a clear offline error.
@@ -149,6 +153,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help=t("cli.strip_junk_help"),
     )
     parser.add_argument(
+        "--no-normalize",
+        action="store_true",
+        help=t("cli.no_normalize_help"),
+    )
+    parser.add_argument(
+        "--no-reocr",
+        action="store_true",
+        help=t("cli.no_reocr_help"),
+    )
+    parser.add_argument(
         "--download-models",
         action="store_true",
         help=t("cli.download_help"),
@@ -223,12 +237,14 @@ def run(args: argparse.Namespace) -> None:
                     preprocess_image=not args.no_preprocess,
                     invert=bool(args.invert),
                     layout=layout,
+                    reocr=not bool(args.no_reocr),
                 )
             )
 
     spell = not args.no_spell
     fix_caps = not args.no_fix_caps
     strip_junk = bool(args.strip_junk)
+    normalize = not bool(args.no_normalize)
     if args.per_file:
         write_per_file_results(
             documents,
@@ -236,6 +252,7 @@ def run(args: argparse.Namespace) -> None:
             spell=spell,
             fix_caps=fix_caps,
             strip_junk=strip_junk,
+            normalize=normalize,
             layout=layout,
         )
         return
@@ -245,6 +262,7 @@ def run(args: argparse.Namespace) -> None:
         spell=spell,
         fix_caps=fix_caps,
         strip_junk=strip_junk,
+        normalize=normalize,
         layout=layout,
     )
     save_text(args.output, text)
@@ -274,6 +292,7 @@ def write_per_file_results(
     spell: bool = True,
     fix_caps: bool = True,
     strip_junk: bool = False,
+    normalize: bool = True,
     layout: str = DEFAULT_LAYOUT,
 ) -> None:
     """Write document.png -> document.txt next to each input."""
@@ -287,6 +306,7 @@ def write_per_file_results(
             spell=spell,
             fix_caps=fix_caps,
             strip_junk=strip_junk,
+            normalize=normalize,
             layout=layout,
         )
         save_text(output, text)
@@ -380,19 +400,22 @@ def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
     spell = bool(request.get("spell", True))
     fix_caps = bool(request.get("fix_caps", True))
     strip_junk = bool(request.get("strip_junk", False))
+    normalize = bool(request.get("normalize", True))
+    reocr = bool(request.get("reocr", True))
     layout = normalize_layout(str(request.get("layout") or DEFAULT_LAYOUT))
 
     for image_path in images:
         ensure_supported_image(image_path)
 
     def emit_line(text: str) -> None:
-        # Always normalize quotes; other polish follows flags.
+        # Quotes always; lookalikes/office/spell follow flags.
         payload = (
             correct_text(
                 text,
                 spell=spell,
                 fix_caps=fix_caps,
                 strip_junk=strip_junk,
+                normalize=normalize,
             )
             if text
             else text
@@ -413,6 +436,7 @@ def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
                 preprocess_image=not no_preprocess,
                 invert=invert,
                 layout=layout,
+                reocr=reocr,
                 on_row=emit_line,
                 on_rows=emit_rows,
             )
@@ -425,6 +449,7 @@ def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
             spell=spell,
             fix_caps=fix_caps,
             strip_junk=strip_junk,
+            normalize=normalize,
             layout=layout,
         )
         return
@@ -434,6 +459,7 @@ def handle_worker_recognize(engine: Any, request: dict[str, Any]) -> None:
         spell=spell,
         fix_caps=fix_caps,
         strip_junk=strip_junk,
+        normalize=normalize,
         layout=layout,
     )
     save_text(output, text)
@@ -464,6 +490,7 @@ def recognize_file(
     preprocess_image: bool,
     invert: bool = False,
     layout: str = DEFAULT_LAYOUT,
+    reocr: bool = True,
     on_row: Optional[Callable[[str], None]] = None,
     on_rows: Optional[Callable[[int], None]] = None,
 ) -> RecognizedDocument:
@@ -478,13 +505,18 @@ def recognize_file(
     if invert:
         image = invert_image(image)
     try:
-        prepared = preprocess(image) if preprocess_image else image
+        if preprocess_image:
+            engine_name = str(getattr(engine, "name", "") or "")
+            prepared = preprocess_for_engine(image, engine_name)
+        else:
+            prepared = image
     except cv2.error as error:
         raise OcrError(t("err.preprocess", name=path.name, error=error)) from error
     lines = engine.recognize(
         prepared,
         path,
         layout=layout_name,
+        reocr=reocr,
         on_row=on_row,
         on_rows=on_rows,
     )
@@ -586,6 +618,7 @@ def read_lines(
     path: Path,
     *,
     layout: str = DEFAULT_LAYOUT,
+    reocr: bool = True,
     on_row: Optional[Callable[[str], None]] = None,
     on_rows: Optional[Callable[[int], None]] = None,
 ) -> list[TextLine]:
@@ -629,6 +662,10 @@ def read_lines(
                         path.name,
                         before,
                         after,
+                    )
+                if reocr:
+                    row_lines = rerecognize_low_confidence(
+                        reader, img_cv_grey, row_lines
                     )
                 lines.extend(row_lines)
                 row_text = " ".join(part.text for part in row_lines if part.text).strip()
@@ -698,6 +735,117 @@ def parse_easyocr_results(raw_rows: Sequence[Any]) -> list[TextLine]:
             continue
         lines.append(TextLine(text=cleaned, confidence=float(confidence), box=points))
     return lines
+
+
+def pad_box(
+    box: Sequence[tuple[int, int]],
+    image_shape: Sequence[int],
+    *,
+    ratio: float = REOCR_PAD_RATIO,
+) -> tuple[tuple[int, int], ...]:
+    """Expand a 4-point box by ratio of its size, clipped to image bounds."""
+    height = int(image_shape[0])
+    width = int(image_shape[1])
+    xs = [int(x) for x, _y in box]
+    ys = [int(y) for _x, y in box]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    pad_x = max(1, int(round((x_max - x_min) * ratio)))
+    pad_y = max(1, int(round((y_max - y_min) * ratio)))
+    left = max(0, x_min - pad_x)
+    right = min(width - 1, x_max + pad_x)
+    top = max(0, y_min - pad_y)
+    bottom = min(height - 1, y_max + pad_y)
+    return (
+        (left, top),
+        (right, top),
+        (right, bottom),
+        (left, bottom),
+    )
+
+
+def looks_numeric_token(text: str) -> bool:
+    """True when the token is mostly digits / date-amount punctuation."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    digits = sum(1 for char in cleaned if char.isdigit())
+    if digits == 0:
+        return False
+    letters = sum(1 for char in cleaned if char.isalpha())
+    return digits >= letters and digits >= max(1, len(cleaned) // 3)
+
+
+def recognize_free_boxes(
+    reader: Any,
+    img_cv_grey: np.ndarray,
+    boxes: Sequence[Sequence[tuple[int, int]]],
+    *,
+    allowlist: str = "",
+) -> list[TextLine]:
+    """One EasyOCR recognize pass over free_list crops."""
+    free_list = [box_as_free_list_item(box) for box in boxes]
+    kwargs: dict[str, Any] = {
+        "horizontal_list": [],
+        "free_list": free_list,
+        "detail": 1,
+        "paragraph": False,
+        "reformat": False,
+    }
+    if allowlist:
+        kwargs["allowlist"] = allowlist
+    raw_rows = reader.recognize(img_cv_grey, **kwargs)
+    return parse_easyocr_results(raw_rows)
+
+
+def pick_better_line(current: TextLine, candidate: Optional[TextLine]) -> TextLine:
+    """Keep the higher-confidence non-empty reading; preserve original box."""
+    if candidate is None or not candidate.text:
+        return current
+    if candidate.confidence > current.confidence:
+        return TextLine(
+            text=candidate.text,
+            confidence=float(candidate.confidence),
+            box=current.box,
+        )
+    return current
+
+
+def rerecognize_low_confidence(
+    reader: Any,
+    img_cv_grey: np.ndarray,
+    lines: Sequence[TextLine],
+) -> list[TextLine]:
+    """Second EasyOCR pass for low-conf crops: padded box, optional digits allowlist."""
+    improved: list[TextLine] = []
+    for line in lines:
+        if line.confidence >= LOW_CONFIDENCE_MARK:
+            improved.append(line)
+            continue
+        best = line
+        padded = pad_box(line.box, img_cv_grey.shape)
+        padded_hits = recognize_free_boxes(reader, img_cv_grey, (padded,))
+        if padded_hits:
+            best = pick_better_line(best, padded_hits[0])
+        if looks_numeric_token(line.text) or looks_numeric_token(best.text):
+            digit_hits = recognize_free_boxes(
+                reader,
+                img_cv_grey,
+                (padded,),
+                allowlist=DIGIT_ALLOWLIST,
+            )
+            if digit_hits:
+                best = pick_better_line(best, digit_hits[0])
+        if best is not line:
+            _LOG.debug(
+                "re-OCR %.2f %r -> %.2f %r",
+                line.confidence,
+                line.text,
+                best.confidence,
+                best.text,
+            )
+        improved.append(best)
+    return improved
 
 
 def box_left(line: TextLine) -> int:
@@ -1101,6 +1249,7 @@ def render_documents(
     spell: bool = True,
     fix_caps: bool = True,
     strip_junk: bool = False,
+    normalize: bool = True,
     layout: str = DEFAULT_LAYOUT,
 ) -> str:
     """One file: plain text. Several files: name headers between blocks."""
@@ -1110,12 +1259,13 @@ def render_documents(
             spell=spell,
             fix_caps=fix_caps,
             strip_junk=strip_junk,
+            normalize=normalize,
             layout=layout,
         )
 
     blocks = [
         f"=== {document.path.name} ===\n"
-        f"{document_text(document, spell=spell, fix_caps=fix_caps, strip_junk=strip_junk, layout=layout)}"
+        f"{document_text(document, spell=spell, fix_caps=fix_caps, strip_junk=strip_junk, normalize=normalize, layout=layout)}"
         for document in documents
     ]
     return "\n\n".join(blocks)
@@ -1127,6 +1277,7 @@ def document_text(
     spell: bool = True,
     fix_caps: bool = True,
     strip_junk: bool = False,
+    normalize: bool = True,
     layout: str = DEFAULT_LAYOUT,
 ) -> str:
     """Join words on the same visual row with spaces; rows with newlines."""
@@ -1139,16 +1290,13 @@ def document_text(
     if not rendered:
         return t("msg.no_text")
     text = "\n".join(rendered)
-    # Always normalize quotes; other polish follows flags.
     return correct_text(
         text,
         spell=spell,
         fix_caps=fix_caps,
         strip_junk=strip_junk,
+        normalize=normalize,
     )
-
-
-LOW_CONFIDENCE_MARK = 0.65
 
 
 def render_debug(documents: Sequence[RecognizedDocument]) -> str:

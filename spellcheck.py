@@ -367,15 +367,17 @@ def correct_text(
     spell: bool = True,
     fix_caps: bool = True,
     strip_junk: bool = False,
+    normalize: bool = True,
 ) -> str:
-    """Polish OCR text: quotes, optional junk/caps/dictionary fixes."""
+    """Polish OCR text: quotes, optional lookalikes/office/caps/dictionary fixes."""
     if not text:
         return text
 
-    # Structure fixes always — independent of spell/caps/junk toggles.
+    # Guillemets stay on; lookalikes/office are optional (can junk rare tokens).
     working = normalize_guillemets(text)
-    working = normalize_ocr_lookalikes(working)
-    working = normalize_office_patterns(working)
+    if normalize:
+        working = normalize_ocr_lookalikes(working)
+        working = normalize_office_patterns(working)
     if not spell and not fix_caps and not strip_junk:
         return working
 

@@ -56,6 +56,7 @@ class OcrBackend(Protocol):
         path: Any,
         *,
         layout: str = "plain",
+        reocr: bool = True,
         on_row: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
     ) -> list[Any]:
@@ -265,6 +266,7 @@ class EasyOcrEngine:
         path: Any,
         *,
         layout: str = "plain",
+        reocr: bool = True,
         on_row: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
     ) -> list[Any]:
@@ -278,6 +280,7 @@ class EasyOcrEngine:
             image,
             path,
             layout=layout,
+            reocr=reocr,
             on_row=on_row,
             on_rows=on_rows,
         )
@@ -301,6 +304,7 @@ class TesseractEngine:
         path: Any,
         *,
         layout: str = "plain",
+        reocr: bool = True,
         on_row: Optional[Callable[[str], None]] = None,
         on_rows: Optional[Callable[[int], None]] = None,
     ) -> list[Any]:
@@ -308,6 +312,7 @@ class TesseractEngine:
         from i18n import t
         from ocr import box_left
 
+        _ = reocr  # EasyOCR-only; kept for shared Strategy signature.
         ensure_tesseract_available()
         import pytesseract
 

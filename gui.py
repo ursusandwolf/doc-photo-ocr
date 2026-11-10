@@ -193,6 +193,8 @@ class OcrEngine:
         spell: bool = True,
         fix_caps: bool = True,
         strip_junk: bool = False,
+        normalize: bool = True,
+        reocr: bool = True,
         invert: bool = False,
         layout: str = DEFAULT_LAYOUT,
         on_file: Callable[[int, int, str], None],
@@ -212,6 +214,8 @@ class OcrEngine:
             "spell": spell,
             "fix_caps": fix_caps,
             "strip_junk": strip_junk,
+            "normalize": normalize,
+            "reocr": reocr,
             "invert": invert,
             "layout": normalize_layout(layout),
         }
@@ -295,8 +299,11 @@ class App(tk.Tk):
         self.output_path = tk.StringVar(value=str(DEFAULT_OUTPUT))
         self.spell_enabled = tk.BooleanVar(value=True)
         self.fix_caps_enabled = tk.BooleanVar(value=True)
+        self.normalize_enabled = tk.BooleanVar(value=True)
+        self.reocr_enabled = tk.BooleanVar(value=True)
         self.strip_junk_enabled = tk.BooleanVar(value=False)
         self.invert_enabled = tk.BooleanVar(value=False)
+        self._options_expanded = False
         self.ui_lang = tk.StringVar(value=get_ui_lang())
         self.ui_theme = tk.StringVar(value=load_theme_pref())
         self.ui_engine = tk.StringVar(value=load_engine_pref())
@@ -428,26 +435,42 @@ class App(tk.Tk):
         self.btn_file.pack(side=tk.LEFT)
         self.btn_folder = ttk.Button(buttons, command=self.on_pick_folder)
         self.btn_folder.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_options = ttk.Button(buttons, command=self.toggle_options)
+        self.btn_options.pack(side=tk.LEFT, padx=(12, 0))
+
+        self.options_frame = ttk.Frame(self.drop_frame)
         self.spell_check = ttk.Checkbutton(
-            buttons,
+            self.options_frame,
             variable=self.spell_enabled,
         )
-        self.spell_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.spell_check.pack(anchor=tk.W, pady=(2, 0))
         self.fix_caps_check = ttk.Checkbutton(
-            buttons,
+            self.options_frame,
             variable=self.fix_caps_enabled,
         )
-        self.fix_caps_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.fix_caps_check.pack(anchor=tk.W, pady=(2, 0))
+        self.normalize_check = ttk.Checkbutton(
+            self.options_frame,
+            variable=self.normalize_enabled,
+        )
+        self.normalize_check.pack(anchor=tk.W, pady=(2, 0))
+        self.reocr_check = ttk.Checkbutton(
+            self.options_frame,
+            variable=self.reocr_enabled,
+        )
+        self.reocr_check.pack(anchor=tk.W, pady=(2, 0))
         self.strip_junk_check = ttk.Checkbutton(
-            buttons,
+            self.options_frame,
             variable=self.strip_junk_enabled,
         )
-        self.strip_junk_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.strip_junk_check.pack(anchor=tk.W, pady=(2, 0))
         self.invert_check = ttk.Checkbutton(
-            buttons,
+            self.options_frame,
             variable=self.invert_enabled,
         )
-        self.invert_check.pack(side=tk.LEFT, padx=(12, 0))
+        self.invert_check.pack(anchor=tk.W, pady=(2, 0))
+        self.options_hint = ttk.Label(self.options_frame)
+        self.options_hint.pack(anchor=tk.W, pady=(4, 0))
 
         out = ttk.Frame(self.root_frame)
         out.pack(fill=tk.X, pady=4)
@@ -500,10 +523,14 @@ class App(tk.Tk):
         self.drop_label.configure(text=t("gui.drop_hint"))
         self.btn_file.configure(text=t("gui.pick_file"))
         self.btn_folder.configure(text=t("gui.pick_folder"))
+        self._refresh_options_button()
         self.spell_check.configure(text=t("gui.spell"))
         self.fix_caps_check.configure(text=t("gui.fix_caps"))
+        self.normalize_check.configure(text=t("gui.normalize"))
+        self.reocr_check.configure(text=t("gui.reocr"))
         self.strip_junk_check.configure(text=t("gui.strip_junk"))
         self.invert_check.configure(text=t("gui.invert"))
+        self.options_hint.configure(text=t("gui.options_star_hint"))
         self.result_label.configure(text=t("gui.result"))
         self.btn_open.configure(text=t("gui.open"))
         self.btn_copy.configure(text=t("gui.copy"))
@@ -615,6 +642,18 @@ class App(tk.Tk):
             selectbackground=palette["select"],
             selectforeground=palette["fg"],
         )
+
+    def _refresh_options_button(self) -> None:
+        key = "gui.more_options_open" if self._options_expanded else "gui.more_options"
+        self.btn_options.configure(text=t(key))
+
+    def toggle_options(self) -> None:
+        self._options_expanded = not self._options_expanded
+        if self._options_expanded:
+            self.options_frame.pack(fill=tk.X, pady=(8, 0))
+        else:
+            self.options_frame.pack_forget()
+        self._refresh_options_button()
 
     def on_language_change(self, _event: object = None) -> None:
         lang = set_ui_lang(self.ui_lang.get())
@@ -1094,6 +1133,8 @@ class App(tk.Tk):
             spell=bool(self.spell_enabled.get()),
             fix_caps=bool(self.fix_caps_enabled.get()),
             strip_junk=bool(self.strip_junk_enabled.get()),
+            normalize=bool(self.normalize_enabled.get()),
+            reocr=bool(self.reocr_enabled.get()),
             invert=bool(self.invert_enabled.get()),
             layout=normalize_layout(self.ui_layout.get()),
             on_file=on_file,
