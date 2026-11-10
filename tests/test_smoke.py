@@ -663,6 +663,12 @@ class SpellcheckSmokeTests(unittest.TestCase):
         self.assertEqual(spellcheck.normalize_ocr_lookalikes("100$"), "100$")
         self.assertEqual(spellcheck.normalize_ocr_lookalikes("$50"), "$50")
         self.assertEqual(spellcheck.normalize_ocr_lookalikes("© 2024"), "© 2024")
+        # Mixed Latin/Cyrillic word and letter-digits in a number.
+        self.assertEqual(
+            spellcheck.normalize_ocr_lookalikes("Дoгoвop 1ОЗ"),
+            "Договор 103",
+        )
+        self.assertEqual(spellcheck.normalize_ocr_lookalikes("Hello"), "Hello")
         fixed = spellcheck.correct_text(
             "договор © стороной на 1$5",
             spell=False,
@@ -672,6 +678,19 @@ class SpellcheckSmokeTests(unittest.TestCase):
         self.assertEqual(fixed, "договор с стороной на 185")
         self.assertNotIn("©", fixed)
         self.assertNotIn("$", fixed)
+
+    def test_debug_marks_low_confidence_words(self) -> None:
+        document = ocr.RecognizedDocument(
+            Path("x.png"),
+            (
+                ocr.TextLine("ok", 0.9, ((0, 0), (10, 0), (10, 10), (0, 10))),
+                ocr.TextLine("bad", 0.4, ((20, 0), (30, 0), (30, 10), (20, 10))),
+            ),
+        )
+        dump = ocr.render_debug((document,))
+        self.assertIn("[0.90] ok", dump)
+        self.assertIn("[0.40] [!] bad", dump)
+        self.assertNotIn("[0.90] [!]", dump)
 
     def test_document_text_respects_no_spell(self) -> None:
         lines = (

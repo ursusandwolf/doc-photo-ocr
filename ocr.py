@@ -1148,6 +1148,9 @@ def document_text(
     )
 
 
+LOW_CONFIDENCE_MARK = 0.65
+
+
 def render_debug(documents: Sequence[RecognizedDocument]) -> str:
     """Human-readable debug dump: index, confidence, box corners."""
     blocks: list[str] = []
@@ -1156,7 +1159,8 @@ def render_debug(documents: Sequence[RecognizedDocument]) -> str:
         if not document.lines:
             rows.append(t("msg.no_text"))
         for number, line in enumerate(document.lines, start=1):
-            rows.append(f"{number}. [{line.confidence:.2f}] {line.text}")
+            flag = " [!]" if line.confidence < LOW_CONFIDENCE_MARK else ""
+            rows.append(f"{number}. [{line.confidence:.2f}]{flag} {line.text}")
             rows.append(t("msg.debug_coords", box=format_box(line.box)))
         blocks.append("\n".join(rows))
     return "\n\n".join(blocks)

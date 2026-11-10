@@ -238,12 +238,96 @@ def normalize_guillemets(text: str) -> str:
     return cleaned
 
 
+# Latin glyphs that OCR often emits inside Cyrillic words.
+LATIN_LOOKALIKE_TO_CYR = str.maketrans(
+    {
+        "A": "А",
+        "a": "а",
+        "B": "В",
+        "E": "Е",
+        "e": "е",
+        "K": "К",
+        "k": "к",
+        "M": "М",
+        "H": "Н",
+        "O": "О",
+        "o": "о",
+        "P": "Р",
+        "p": "р",
+        "C": "С",
+        "c": "с",
+        "T": "Т",
+        "X": "Х",
+        "x": "х",
+    }
+)
+# Cyrillic/Latin letters mistaken for digits inside number-like tokens.
+_LETTER_TO_DIGIT_MAP = {
+    "О": "0",
+    "о": "0",
+    "O": "0",
+    "o": "0",
+    "З": "3",
+    "з": "3",
+    "І": "1",
+    "I": "1",
+    "l": "1",
+    "|": "1",
+}
+LETTER_LOOKALIKE_TO_DIGIT = str.maketrans(_LETTER_TO_DIGIT_MAP)
+DIGIT_LOOKALIKE_LETTERS = frozenset(_LETTER_TO_DIGIT_MAP)
+TOKEN_FOR_LOOKALIKE = re.compile(r"[A-Za-zА-Яа-яЁёІі0-9|]+", re.UNICODE)
+
+
+def _count_script_chars(token: str) -> tuple[int, int, int]:
+    cyr = 0
+    lat = 0
+    digits = 0
+    for char in token:
+        if char.isdigit():
+            digits += 1
+        elif "А" <= char <= "я" or char in "ЁёІі":
+            cyr += 1
+        elif ("A" <= char <= "Z") or ("a" <= char <= "z"):
+            lat += 1
+    return cyr, lat, digits
+
+
+def _is_number_with_digit_lookalikes(token: str) -> bool:
+    """True for tokens like 1ОЗ / 1O3 where non-digits are only 0/1/3 lookalikes."""
+    if not any(char.isdigit() for char in token):
+        return False
+    letters = [char for char in token if not char.isdigit()]
+    return bool(letters) and all(char in DIGIT_LOOKALIKE_LETTERS for char in letters)
+
+
+def _fix_token_script_lookalikes(token: str) -> str:
+    """Fix mixed Latin/Cyrillic words and letter-digits inside numbers."""
+    cyr, lat, digits = _count_script_chars(token)
+    if _is_number_with_digit_lookalikes(token) or (
+        digits > 0 and digits >= cyr + lat and (cyr + lat) > 0
+    ):
+        return token.translate(LETTER_LOOKALIKE_TO_DIGIT)
+    if cyr > 0 and lat > 0:
+        return token.translate(LATIN_LOOKALIKE_TO_CYR)
+    return token
+
+
 def normalize_ocr_lookalikes(text: str) -> str:
-    """Map contextual OCR glyph confusions (©→с, $→8) before other polish."""
+    """Map contextual OCR glyph confusions before other polish."""
     if not text:
         return text
     cleaned = OCR_DOLLAR_AS_EIGHT.sub("8", text)
-    return OCR_COPYRIGHT_AS_S.sub("с", cleaned)
+    cleaned = OCR_COPYRIGHT_AS_S.sub("с", cleaned)
+
+    parts: list[str] = []
+    last = 0
+    for match in TOKEN_FOR_LOOKALIKE.finditer(cleaned):
+        parts.append(cleaned[last : match.start()])
+        parts.append(_fix_token_script_lookalikes(match.group(0)))
+        last = match.end()
+    parts.append(cleaned[last:])
+    return "".join(parts)
 
 
 def normalize_office_patterns(text: str) -> str:
