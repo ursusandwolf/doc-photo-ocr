@@ -36,7 +36,7 @@ from engines import (
 from i18n import get_ui_lang, set_ui_lang, t
 from image_paths import PathError as ImagePathError
 from image_paths import collect_images
-from ocr import DEFAULT_LAYOUT, LAYOUT_NAMES, normalize_layout
+from layout import DEFAULT_LAYOUT, LAYOUT_NAMES, normalize_layout
 from tesseract_setup import (
     install_tesseract_local,
     is_tesseract_ready,

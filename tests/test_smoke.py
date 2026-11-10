@@ -435,10 +435,13 @@ class TextLayoutSmokeTests(unittest.TestCase):
         self.assertEqual(text, "Первая строка\nВторая ниже")
 
     def test_normalize_layout(self) -> None:
-        self.assertEqual(ocr.normalize_layout("PLAIN"), ocr.LAYOUT_PLAIN)
-        self.assertEqual(ocr.normalize_layout("table"), ocr.LAYOUT_TABLE)
+        from layout import DEFAULT_LAYOUT, LAYOUT_PLAIN, LAYOUT_TABLE, normalize_layout
+
+        self.assertEqual(normalize_layout("PLAIN"), LAYOUT_PLAIN)
+        self.assertEqual(normalize_layout("table"), LAYOUT_TABLE)
+        self.assertEqual(ocr.DEFAULT_LAYOUT, DEFAULT_LAYOUT)
         with self.assertRaises(ocr.OcrError):
-            ocr.normalize_layout("zigzag")
+            normalize_layout("zigzag")
 
     def test_two_column_bands_cluster_separately(self) -> None:
         lines = (

@@ -199,7 +199,8 @@ def group_tesseract_native_rows(
     Native line_num keeps table cells on the correct visual line. If Tesseract
     exposes only a single line id, fall back to geometry-only grouping.
     """
-    from ocr import box_left, group_lines_into_rows, normalize_layout
+    from layout import normalize_layout
+    from ocr import box_left, group_lines_into_rows
 
     layout_name = normalize_layout(layout)
     texts = data.get("text") or []

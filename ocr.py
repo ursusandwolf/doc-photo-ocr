@@ -42,6 +42,13 @@ from image_paths import PathError as ImagePathError
 from image_paths import collect_images as collect_image_paths
 from engines import DEFAULT_ENGINE, create_engine, normalize_engine
 from errors import OcrError
+from layout import (
+    DEFAULT_LAYOUT,
+    LAYOUT_NAMES,
+    LAYOUT_PLAIN,
+    LAYOUT_TABLE,
+    normalize_layout,
+)
 from offline_guard import offline_session
 from preprocess import find_document_corners, invert_image, preprocess
 from spellcheck import correct_text
@@ -49,11 +56,6 @@ from spellcheck import correct_text
 DEFAULT_LANGUAGES = "ru"
 DEFAULT_OUTPUT = Path("result.txt")
 MODEL_DIR = Path(__file__).resolve().parent / "models"
-# Layout: plain prose (default) vs tables/forms with wide cell gaps.
-LAYOUT_PLAIN = "plain"
-LAYOUT_TABLE = "table"
-LAYOUT_NAMES = (LAYOUT_PLAIN, LAYOUT_TABLE)
-DEFAULT_LAYOUT = LAYOUT_PLAIN
 # Line clustering: prefer vertical overlap; center distance is a fallback.
 MIN_VERTICAL_OVERLAP_RATIO = 0.5
 MAX_CENTER_Y_RATIO = 0.35
@@ -175,13 +177,6 @@ def parse_languages(value: str) -> list[str]:
     if not languages:
         raise OcrError(t("err.need_ocr_lang"))
     return languages
-
-
-def normalize_layout(value: str) -> str:
-    name = (value or DEFAULT_LAYOUT).strip().lower()
-    if name not in LAYOUT_NAMES:
-        raise OcrError(t("err.bad_layout", layout=value, allowed=", ".join(LAYOUT_NAMES)))
-    return name
 
 
 def run(args: argparse.Namespace) -> None:

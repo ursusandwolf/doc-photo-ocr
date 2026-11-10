@@ -41,6 +41,7 @@ jobs:
             "start.bat",
             "gui.py",
             "ocr.py",
+            "layout.py",
             "engines.py",
             "errors.py",
             "preprocess.py",
