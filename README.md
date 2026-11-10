@@ -106,17 +106,19 @@ Phase 1 Strategy is in [`engines.py`](engines.py): both backends return `TextLin
 
 | Engine | Disk / install | Cold start | Fit |
 |---|---|---|---|
-| **EasyOCR** (default) | ~90+ MB weights + PyTorch | Slow | Phone photos, RU/EN |
-| **Tesseract** | Smaller; GUI **Install Tesseract** or system binary | Fast | Clean scans / print |
+| **EasyOCR** (default) | ~90+ MB weights + PyTorch | Slow | Phone photos (needs QC — see notes) |
+| **Tesseract** | Smaller; GUI **Install Tesseract** or system binary | Fast | Prefer for current document photos |
 
 Tesseract lookup: `TESSERACT_CMD` → `tesseract_cmd.txt` → `PATH` → `%LOCALAPPDATA%\DocOCR\tesseract` → `C:\Program Files\Tesseract-OCR\`.
 
 | Scenario | EasyOCR | Tesseract |
 |---|---|---|
-| Phone photo A4 | Better (default) | Weaker without heavy preprocess |
-| Clean scan / synthetic print | Good; №/quotes/tables still slip | Often better on flat text/digits |
+| Manual QC 2026-11-10 (same images) | More token junk | **Good quality** |
+| Phone photo A4 | Designed for this; verify per sample | Try if EasyOCR is noisy |
+| Clean scan / print | Often weaker on digits/`№` | Strong |
 | Cold start / RAM | Slow / heavy | Faster / lighter |
 
+Manual QC + EasyOCR analysis backlog: [`docs/engine-quality-notes.md`](docs/engine-quality-notes.md).  
 Compare notes vs [OCR-CopyPastePad](https://github.com/FlyingFathead/OCR-CopyPastePad): [`docs/compare-copypastepad.md`](docs/compare-copypastepad.md).
 
 Possible later: score both engines and keep the better pass (not implemented).
