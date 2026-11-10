@@ -460,14 +460,14 @@ class TextLayoutSmokeTests(unittest.TestCase):
             )
 
     def test_estimate_residual_skew_from_tilted_centers(self) -> None:
-        # Axis-aligned boxes whose centers still follow a ~5° slope.
+        # Same-line neighbors with ~5° center slope (near X gaps, strong Y overlap).
         lines = (
-            ocr.TextLine("a", 0.9, ((10, 100), (110, 100), (110, 120), (10, 120))),
-            ocr.TextLine("b", 0.9, ((210, 117), (310, 117), (310, 137), (210, 137))),
-            ocr.TextLine("c", 0.9, ((410, 135), (510, 135), (510, 155), (410, 155))),
-            ocr.TextLine("d", 0.9, ((610, 152), (710, 152), (710, 172), (610, 172))),
+            ocr.TextLine("a", 0.9, ((10, 100), (90, 100), (90, 120), (10, 120))),
+            ocr.TextLine("b", 0.9, ((100, 108), (180, 108), (180, 128), (100, 128))),
+            ocr.TextLine("c", 0.9, ((190, 116), (270, 116), (270, 136), (190, 136))),
+            ocr.TextLine("d", 0.9, ((280, 124), (360, 124), (360, 144), (280, 144))),
         )
-        flat = [ocr.flatten_box(item, skew_degrees=0.0, origin=(360.0, 136.0)) for item in lines]
+        flat = [ocr.flatten_box(item, skew_degrees=0.0, origin=(185.0, 122.0)) for item in lines]
         residual = ocr.estimate_residual_skew_degrees(flat)
         self.assertGreater(abs(residual), 1.0)
         self.assertLess(abs(residual), 15.0)
@@ -483,6 +483,31 @@ class TextLayoutSmokeTests(unittest.TestCase):
         rows = ocr.group_lines_into_rows(lines, layout=ocr.LAYOUT_PLAIN)
         self.assertEqual(len(rows), 1)
         self.assertEqual([part.text for part in rows[0]], ["One", "Two", "Three"])
+
+    def test_upright_jagged_page_keeps_row_count_no_mix(self) -> None:
+        # Page-wide residual used to invent tilt and shatter upright lines.
+        lines: list[ocr.TextLine] = []
+        for row in range(20):
+            y = 40 + row * 36
+            lines.append(
+                ocr.TextLine(f"A{row}", 0.9, ((10, y), (90, y), (90, y + 24), (10, y + 24)))
+            )
+            lines.append(
+                ocr.TextLine(f"B{row}", 0.9, ((100, y), (180, y), (180, y + 24), (100, y + 24)))
+            )
+            right = 220 if row % 3 == 0 else 300
+            lines.append(
+                ocr.TextLine(
+                    f"C{row}",
+                    0.9,
+                    ((190, y), (right, y), (right, y + 24), (190, y + 24)),
+                )
+            )
+        rows = ocr.group_lines_into_rows(tuple(lines), layout=ocr.LAYOUT_PLAIN)
+        self.assertEqual(len(rows), 20)
+        for index, row in enumerate(rows):
+            names = [part.text for part in row]
+            self.assertEqual(names, [f"A{index}", f"B{index}", f"C{index}"], names)
 
     def test_parse_easyocr_results_skips_empty(self) -> None:
         raw = [

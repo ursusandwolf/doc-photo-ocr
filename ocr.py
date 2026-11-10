@@ -790,22 +790,44 @@ def estimate_page_skew_degrees(lines: Sequence[TextLine]) -> float:
 
 
 def estimate_residual_skew_degrees(flat: Sequence[FlatBox]) -> float:
-    """Second-pass tilt from flattened wide boxes (center_y vs center_x slope)."""
-    wide = [item for item in flat if item.width >= MIN_SKEW_WIDTH_HEIGHT_RATIO * item.height]
-    if len(wide) < MIN_SKEW_SAMPLES:
+    """Second-pass tilt from same-line neighbors (median atan(dy/dx)).
+
+    Page-wide center regression invents false tilt on upright jagged columns.
+    Pair only boxes that overlap vertically and sit near each other on X.
+    """
+    if len(flat) < 2:
         return 0.0
-    xs = [(item.left + item.right) / 2.0 for item in wide]
-    ys = [item.center_y for item in wide]
-    mean_x = sum(xs) / len(xs)
-    mean_y = sum(ys) / len(ys)
-    denom = sum((x - mean_x) ** 2 for x in xs)
-    if denom < 1.0:
+    ordered = sorted(flat, key=lambda item: (item.left, item.center_y))
+    samples: list[float] = []
+    for index, left in enumerate(ordered):
+        best_angle: Optional[float] = None
+        best_gap: Optional[float] = None
+        max_gap = 3.0 * max(left.height, 1.0)
+        for right in ordered[index + 1 :]:
+            gap = right.left - left.right
+            if gap < 0:
+                continue
+            if gap > max_gap:
+                break
+            if vertical_overlap_ratio(left, right) < 0.3:
+                continue
+            dx = ((right.left + right.right) / 2.0) - ((left.left + left.right) / 2.0)
+            if abs(dx) < 1.0:
+                continue
+            dy = right.center_y - left.center_y
+            angle = math.degrees(math.atan2(dy, dx))
+            if best_gap is None or gap < best_gap:
+                best_gap = gap
+                best_angle = angle
+        if best_angle is not None:
+            samples.append(best_angle)
+    if len(samples) < MIN_SKEW_SAMPLES:
         return 0.0
-    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
-    degrees = math.degrees(math.atan(slope))
+    samples.sort()
+    degrees = float(samples[len(samples) // 2])
     if abs(degrees) < 1.0 or abs(degrees) > 15.0:
         return 0.0
-    return float(degrees)
+    return degrees
 
 
 def rotate_point(
