@@ -645,6 +645,21 @@ class SpellcheckSmokeTests(unittest.TestCase):
             strip_junk=False,
         )
         self.assertEqual(fixed, "Договор № 1 от 01.02.2024 с ООО Тест")
+        # Spell must not turn office «руб.» into «руби.».
+        self.assertEqual(
+            spellcheck.correct_text(
+                "сумма 1000 ру6",
+                spell=True,
+                fix_caps=False,
+                strip_junk=False,
+            ),
+            "сумма 1000 руб.",
+        )
+        # Latin product codes must keep Latin O (not digit 0).
+        self.assertEqual(
+            spellcheck.normalize_ocr_lookalikes("Contract ID: A4-RUBEN-0O1"),
+            "Contract ID: A4-RUBEN-0O1",
+        )
 
     def test_normalizes_ocr_lookalikes_copyright_and_dollar(self) -> None:
         self.assertEqual(

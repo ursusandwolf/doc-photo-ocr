@@ -67,8 +67,9 @@ OCR_LEGAL_IP = re.compile(
 )
 
 # Dates like 15.03.2025 / 15,03,2025 / 15-03-2025 → dots.
+# No spaces as separators — that glued unrelated map/coord digits into fake dates.
 OCR_DATE = re.compile(
-    r"\b([0-3]?\d)[./,\- ]([01]?\d)[./,\- ]((?:19|20)\d{2})\b"
+    r"\b([0-3]?\d)[./,\-]([01]?\d)[./,\-]((?:19|20)\d{2})\b"
 )
 
 # Currency / city abbreviations after OCR noise.
@@ -129,6 +130,9 @@ WHITELIST = {
     "contract",
     "г",
     "гг",
+    "руб",
+    "руб.",
+    "pyб",
     "email",
     "e-mail",
     "е-mail",
@@ -239,44 +243,40 @@ def normalize_guillemets(text: str) -> str:
 
 
 # Latin glyphs that OCR often emits inside Cyrillic words.
-LATIN_LOOKALIKE_TO_CYR = str.maketrans(
-    {
-        "A": "А",
-        "a": "а",
-        "B": "В",
-        "E": "Е",
-        "e": "е",
-        "K": "К",
-        "k": "к",
-        "M": "М",
-        "H": "Н",
-        "O": "О",
-        "o": "о",
-        "P": "Р",
-        "p": "р",
-        "C": "С",
-        "c": "с",
-        "T": "Т",
-        "X": "Х",
-        "x": "х",
-    }
-)
+_LATIN_TO_CYR_MAP = {
+    "A": "А",
+    "a": "а",
+    "B": "В",
+    "E": "Е",
+    "e": "е",
+    "K": "К",
+    "k": "к",
+    "M": "М",
+    "H": "Н",
+    "O": "О",
+    "o": "о",
+    "P": "Р",
+    "p": "р",
+    "C": "С",
+    "c": "с",
+    "T": "Т",
+    "X": "Х",
+    "x": "х",
+}
+LATIN_LOOKALIKE_TO_CYR = str.maketrans(_LATIN_TO_CYR_MAP)
+LATIN_LOOKALIKE_LETTERS = frozenset(_LATIN_TO_CYR_MAP)
 # Cyrillic/Latin letters mistaken for digits inside number-like tokens.
+# Only Cyrillic lookalikes → digits. Latin O/I in codes like A4-RUBEN-0O1 must stay.
 _LETTER_TO_DIGIT_MAP = {
     "О": "0",
     "о": "0",
-    "O": "0",
-    "o": "0",
     "З": "3",
     "з": "3",
     "І": "1",
-    "I": "1",
-    "l": "1",
-    "|": "1",
 }
 LETTER_LOOKALIKE_TO_DIGIT = str.maketrans(_LETTER_TO_DIGIT_MAP)
 DIGIT_LOOKALIKE_LETTERS = frozenset(_LETTER_TO_DIGIT_MAP)
-TOKEN_FOR_LOOKALIKE = re.compile(r"[A-Za-zА-Яа-яЁёІі0-9|]+", re.UNICODE)
+TOKEN_FOR_LOOKALIKE = re.compile(r"[A-Za-zА-Яа-яЁёІі0-9]+", re.UNICODE)
 
 
 def _count_script_chars(token: str) -> tuple[int, int, int]:
@@ -301,14 +301,22 @@ def _is_number_with_digit_lookalikes(token: str) -> bool:
     return bool(letters) and all(char in DIGIT_LOOKALIKE_LETTERS for char in letters)
 
 
+def _latin_letters_are_only_lookalikes(token: str) -> bool:
+    letters = [
+        char
+        for char in token
+        if ("A" <= char <= "Z") or ("a" <= char <= "z")
+    ]
+    return bool(letters) and all(char in LATIN_LOOKALIKE_LETTERS for char in letters)
+
+
 def _fix_token_script_lookalikes(token: str) -> str:
-    """Fix mixed Latin/Cyrillic words and letter-digits inside numbers."""
+    """Fix mixed Latin/Cyrillic words and Cyrillic letters inside numbers."""
     cyr, lat, digits = _count_script_chars(token)
-    if _is_number_with_digit_lookalikes(token) or (
-        digits > 0 and digits >= cyr + lat and (cyr + lat) > 0
-    ):
+    if _is_number_with_digit_lookalikes(token):
         return token.translate(LETTER_LOOKALIKE_TO_DIGIT)
-    if cyr > 0 and lat > 0:
+    # Cyrillic present + every Latin char is a lookalike (Дoгoвop), not RUBEN/ID.
+    if cyr > 0 and lat > 0 and _latin_letters_are_only_lookalikes(token):
         return token.translate(LATIN_LOOKALIKE_TO_CYR)
     return token
 
