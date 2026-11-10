@@ -42,6 +42,39 @@ OCR_COPYRIGHT_AS_S = re.compile(
     r"|(?<!\S)[©¢](?!\S)(?!\s+\d{4}\b)"
 )
 
+# EasyOCR often reads «№» as Ng / No / N° / N. before a document number.
+OCR_NUMERO = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё0-9])(?:Ng|NG|No|NO|Nо|NО|N°|Nº|N\.)(?=\s*\d)",
+    re.UNICODE,
+)
+
+# Collapse mangled legal-form tokens to canonical uppercase.
+OCR_LEGAL_FORM = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё])(?:ооо|oоо|оoо|ооo|OOO|Ooo)(?![A-Za-zА-Яа-яЁё])",
+    re.IGNORECASE,
+)
+OCR_LEGAL_ZAO = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё])(?:зао|ZAO)(?![A-Za-zА-Яа-яЁё])",
+    re.IGNORECASE,
+)
+OCR_LEGAL_PAO = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё])(?:пао|PAO)(?![A-Za-zА-Яа-яЁё])",
+    re.IGNORECASE,
+)
+OCR_LEGAL_IP = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё0-9])ип(?![A-Za-zА-Яа-яЁё0-9])",
+    re.IGNORECASE,
+)
+
+# Dates like 15.03.2025 / 15,03,2025 / 15-03-2025 → dots.
+OCR_DATE = re.compile(
+    r"\b([0-3]?\d)[./,\- ]([01]?\d)[./,\- ]((?:19|20)\d{2})\b"
+)
+
+# Currency / city abbreviations after OCR noise.
+OCR_RUB = re.compile(r"(?<![A-Za-zА-Яа-яЁё])(?:руб|pyб|ру6)(?:\.|(?=\s|$))", re.IGNORECASE)
+OCR_CITY_G = re.compile(r"(?<![A-Za-zА-Яа-яЁё])г(?:\.|(?=\s+[A-ZА-ЯЁ]))")
+
 # If 2+ of these sit in a row, the whole run is OCR garbage
 # (keeps a single № % : ; ! ? ( ) / " for real text).
 NOISE_RUN_CHARS = '!"№%;:?*(~`|;\\/\'"'
@@ -213,6 +246,21 @@ def normalize_ocr_lookalikes(text: str) -> str:
     return OCR_COPYRIGHT_AS_S.sub("с", cleaned)
 
 
+def normalize_office_patterns(text: str) -> str:
+    """Restore №, legal forms, dates, and common office abbreviations."""
+    if not text:
+        return text
+    cleaned = OCR_NUMERO.sub("№", text)
+    cleaned = OCR_LEGAL_FORM.sub("ООО", cleaned)
+    cleaned = OCR_LEGAL_ZAO.sub("ЗАО", cleaned)
+    cleaned = OCR_LEGAL_PAO.sub("ПАО", cleaned)
+    cleaned = OCR_LEGAL_IP.sub("ИП", cleaned)
+    cleaned = OCR_DATE.sub(r"\1.\2.\3", cleaned)
+    cleaned = OCR_RUB.sub("руб.", cleaned)
+    cleaned = OCR_CITY_G.sub("г.", cleaned)
+    return cleaned
+
+
 def strip_junk_text(text: str) -> str:
     """Remove OCR garbage characters; keep e-mail addresses and phone numbers."""
     if not text:
@@ -232,9 +280,10 @@ def correct_text(
     if not text:
         return text
 
-    # Guillemets + lookalikes always — they fix structure, not optional polish.
+    # Structure fixes always — independent of spell/caps/junk toggles.
     working = normalize_guillemets(text)
     working = normalize_ocr_lookalikes(working)
+    working = normalize_office_patterns(working)
     if not spell and not fix_caps and not strip_junk:
         return working
 

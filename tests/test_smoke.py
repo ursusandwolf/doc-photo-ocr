@@ -621,6 +621,31 @@ class SpellcheckSmokeTests(unittest.TestCase):
         )
         self.assertEqual(kept, "фирма «СеверТорг»")
 
+    def test_normalizes_office_patterns_numero_dates_legal(self) -> None:
+        self.assertEqual(
+            spellcheck.normalize_office_patterns("Договор Ng 145-к от 15,03,2025"),
+            "Договор № 145-к от 15.03.2025",
+        )
+        self.assertEqual(
+            spellcheck.normalize_office_patterns("No 12 и N. 3"),
+            "№ 12 и № 3",
+        )
+        self.assertEqual(
+            spellcheck.normalize_office_patterns("ооо Ромашка и зао Северторг"),
+            "ООО Ромашка и ЗАО Северторг",
+        )
+        self.assertEqual(
+            spellcheck.normalize_office_patterns("сумма 1000 ру6 г Москва"),
+            "сумма 1000 руб. г. Москва",
+        )
+        fixed = spellcheck.correct_text(
+            "Договор Ng 1 от 01-02-2024 с ooo Тест",
+            spell=False,
+            fix_caps=False,
+            strip_junk=False,
+        )
+        self.assertEqual(fixed, "Договор № 1 от 01.02.2024 с ООО Тест")
+
     def test_normalizes_ocr_lookalikes_copyright_and_dollar(self) -> None:
         self.assertEqual(
             spellcheck.normalize_ocr_lookalikes("договор © ООО «Ромашка»"),
