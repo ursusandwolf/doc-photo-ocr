@@ -603,9 +603,17 @@ class SpellcheckSmokeTests(unittest.TestCase):
             "договор с ООО «Ромашка»",
         )
         self.assertEqual(
+            spellcheck.normalize_ocr_lookalikes("©тороны"),
+            "стороны",
+        )
+        self.assertEqual(
             spellcheck.normalize_ocr_lookalikes("сумма 1$0 руб."),
             "сумма 180 руб.",
         )
+        # Real money / copyright year must not be rewritten blindly.
+        self.assertEqual(spellcheck.normalize_ocr_lookalikes("100$"), "100$")
+        self.assertEqual(spellcheck.normalize_ocr_lookalikes("$50"), "$50")
+        self.assertEqual(spellcheck.normalize_ocr_lookalikes("© 2024"), "© 2024")
         fixed = spellcheck.correct_text(
             "договор © стороной на 1$5",
             spell=False,

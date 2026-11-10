@@ -32,12 +32,14 @@ ALWAYS_JUNK = frozenset(
 )
 
 # Frequent EasyOCR/Tesseract confusions on Cyrillic office photos.
-OCR_LOOKALIKES = str.maketrans(
-    {
-        "©": "с",  # conjunction «с» / letter с
-        "¢": "с",
-        "$": "8",
-    }
+# $→8 only between word chars (1$0→180); bare $50 / 100$ stay money-like.
+OCR_DOLLAR_AS_EIGHT = re.compile(r"(?<=\w)\$(?=\w)")
+# ©/¢ as Cyrillic «с»: glued to letters, or a lone token (союз «с»).
+# Keep «© 2024» style copyright years.
+OCR_COPYRIGHT_AS_S = re.compile(
+    r"(?<=[A-Za-zА-Яа-яЁё])[©¢]"
+    r"|[©¢](?=[A-Za-zА-Яа-яЁё])"
+    r"|(?<!\S)[©¢](?!\S)(?!\s+\d{4}\b)"
 )
 
 # If 2+ of these sit in a row, the whole run is OCR garbage
@@ -204,10 +206,11 @@ def normalize_guillemets(text: str) -> str:
 
 
 def normalize_ocr_lookalikes(text: str) -> str:
-    """Map common OCR glyph confusions (©→с, $→8) before other polish."""
+    """Map contextual OCR glyph confusions (©→с, $→8) before other polish."""
     if not text:
         return text
-    return text.translate(OCR_LOOKALIKES)
+    cleaned = OCR_DOLLAR_AS_EIGHT.sub("8", text)
+    return OCR_COPYRIGHT_AS_S.sub("с", cleaned)
 
 
 def strip_junk_text(text: str) -> str:
